@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.2"
+const version = "0.0.3"
 
 var (
 	// Base styles
@@ -566,6 +566,35 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// In split view, just switch focus
 			m.activePane = PaneQueue
 			m.textInput.Blur()
+			return m, nil
+
+		case "enter":
+			// Enter stages all matched files
+			if m.textInput.Value() != "" {
+				for path := range m.matchedFiles {
+					if !m.markedFiles[path] {
+						// Find the file in the list and stage it
+						for _, f := range m.files {
+							if f.Path == path && f.IsPrintable {
+								m.markedFiles[path] = true
+								m.stagedFiles = append(m.stagedFiles, StagedFile{
+									Name:    f.Name,
+									Path:    f.Path,
+									Size:    f.Size,
+									AddedAt: time.Now(),
+								})
+								break
+							}
+						}
+					}
+				}
+			}
+			// Move focus to file list
+			m.fileFocus = FocusFileList
+			m.textInput.Blur()
+			if len(m.files) > 0 {
+				m.fileCursor = 0
+			}
 			return m, nil
 
 		case "down", "j":
