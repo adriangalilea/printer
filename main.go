@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 var (
 	// Base styles
@@ -38,8 +38,7 @@ var (
 			Foreground(theme.Surface2)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(theme.Overlay0).
-			Padding(1, 0)
+			Foreground(theme.Overlay0)
 
 	// File browser styles
 	fileStyle = lipgloss.NewStyle().
@@ -168,6 +167,8 @@ type model struct {
 	matchedFiles    map[string]bool // Files matching pattern (visual only)
 	dirCursorMemory map[string]int  // Remember cursor position for each directory
 
+	// Help bar component
+	helpBar *HelpBar
 
 	errorMsg string
 	args     []string
@@ -193,6 +194,7 @@ func initialModel(args []string) model {
 		stagedFiles:     []StagedFile{},
 		textInput:       ti,
 		currentDir:      currentDir,
+		helpBar:         NewHelpBar(80), // Initial width, will be updated
 		args:            args,
 	}
 
@@ -349,6 +351,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Let help bar handle key if it wants to
+		if m.helpBar.HandleKey(msg.String()) {
+			return m, nil
+		}
+
 		// Handle global shortcuts first
 		switch msg.String() {
 		case "ctrl+c":
@@ -1032,14 +1039,26 @@ func (m model) View() string {
 		return "Initializing..."
 	}
 
+	var mainView string
 	switch m.layoutMode {
 	case LayoutHorizontal:
-		return m.viewSplitHorizontal()
+		mainView = m.viewSplitHorizontal()
 	case LayoutVertical:
-		return m.viewSplitVertical()
+		mainView = m.viewSplitVertical()
 	default:
-		return m.viewSinglePane()
+		mainView = m.viewSinglePane()
 	}
+
+	// If help overlay is showing, render it instead of main view
+	if m.helpBar.IsShowingFullHelp() {
+		overlay := m.helpBar.RenderFullHelp()
+		// Center the overlay on the screen
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			overlay)
+	}
+
+	return mainView
 }
 
 func (m model) viewSinglePane() string {
@@ -1093,13 +1112,13 @@ func (m model) viewSplitHorizontal() string {
 }
 
 func (m model) viewSplitVertical() string {
-	const helpHeight = 2 // Help bar needs more space
-	const pathHeight = 1 // Height for the path display
+	const helpHeight = 1 // Help bar is 1 line
+	const pathHeight = 1 // Path display is 1 line
 
 	// Calculate pane heights
 	availableHeight := m.height - helpHeight - pathHeight
-	topHeight := (availableHeight - 1) / 2  // -1 for the path divider
-	bottomHeight := availableHeight - topHeight - 1
+	topHeight := availableHeight / 2
+	bottomHeight := availableHeight - topHeight
 
 	// Queue pane
 	queueBorder := inactiveBorderStyle
@@ -1126,36 +1145,17 @@ func (m model) viewSplitVertical() string {
 		Height(bottomHeight - 2).
 		Render(filesContent)
 
-	// Join vertically with path in between
-	content := lipgloss.JoinVertical(lipgloss.Left, queuePane, path, filesPane)
+	// Help bar
 	help := m.renderHelpBar()
 
-	return content + help
+	// Join everything vertically
+	return lipgloss.JoinVertical(lipgloss.Left, queuePane, path, filesPane, help)
 }
 
-func (m model) renderHelpBar() string {
-	var helpText string
-
-	// Global shortcuts
-	helpText = "P: print staged • X: clear staged • "
-
-	if m.layoutMode != LayoutSingle {
-		helpText += "tab: switch pane • "
-	}
-
-	if m.activePane == PaneQueue {
-		helpText += "↑↓: nav • x: cancel • o: open • q: quit"
-	} else {
-		if m.fileFocus == FocusInput {
-			helpText += "↓: list • esc: back"
-		} else {
-			helpText += "←→: dirs • space: mark • ↑: input"
-		}
-	}
-
-	return helpStyle.Copy().
-		Width(m.width - 2).
-		Render(helpText)
+func (m *model) renderHelpBar() string {
+	// Update help bar context and width
+	m.helpBar.Update(m.width - 2, m.activePane, m.layoutMode, m.fileFocus, m.queueSection)
+	return m.helpBar.Render()
 }
 
 func (m model) renderCurrentPath(width int) string {
@@ -1295,8 +1295,7 @@ func (m model) getSelectionSymbol(file FileItem) string {
 
 func (m model) viewQueuePane() string {
 	// Calculate dimensions
-	contentHeight := m.height - 4 // Title, spacing, help
-	contentWidth := m.width - 4   // Margins
+	contentWidth := m.width - 4   // Border margins
 
 	// Title bar
 	title := titleStyle.Copy().
@@ -1305,7 +1304,10 @@ func (m model) viewQueuePane() string {
 		Render("🖨  Printer Queue Manager")
 
 	// Content area
-	queueContent := m.renderQueueContent(contentWidth, contentHeight-6)
+	// Height available = m.height - 4 (for borders/padding)
+	// Height for content = available - 4 (title, 2 spacers, help)
+	contentHeight := m.height - 8
+	queueContent := m.renderQueueContent(contentWidth, contentHeight)
 
 	// Help bar
 	help := m.renderHelpBar()
@@ -1322,8 +1324,7 @@ func (m model) viewQueuePane() string {
 }
 
 func (m model) viewFilesPane() string {
-	contentWidth := m.width - 4
-	contentHeight := m.height - 4 // Title, help, spacing
+	contentWidth := m.width - 4   // Border margins
 
 	// Title
 	title := titleStyle.Copy().
@@ -1332,7 +1333,10 @@ func (m model) viewFilesPane() string {
 		Render("📁 Add Files to Print Queue")
 
 	// Files content
-	filesContent := m.renderFilesContent(contentWidth, contentHeight-4)
+	// Height available = m.height - 4 (for borders/padding)
+	// Height for content = available - 4 (title, 2 spacers, help)
+	contentHeight := m.height - 8
+	filesContent := m.renderFilesContent(contentWidth, contentHeight)
 
 	// Help
 	help := m.renderHelpBar()
