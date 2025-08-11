@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.7"
+const version = "0.0.8"
 
 var (
 	// Base styles
@@ -160,12 +160,13 @@ type model struct {
 	height int
 
 	// File browser state
-	textInput    textinput.Model
-	currentDir   string
-	files        []FileItem
-	fileCursor   int
-	markedFiles  map[string]bool // Files checked for staging
-	matchedFiles map[string]bool // Files matching pattern (visual only)
+	textInput       textinput.Model
+	currentDir      string
+	files           []FileItem
+	fileCursor      int
+	markedFiles     map[string]bool // Files checked for staging
+	matchedFiles    map[string]bool // Files matching pattern (visual only)
+	dirCursorMemory map[string]int  // Remember cursor position for each directory
 
 
 	errorMsg string
@@ -181,17 +182,18 @@ func initialModel(args []string) model {
 	currentDir, _ := os.Getwd()
 
 	m := model{
-		layoutMode:   LayoutSingle,
-		activePane:   PaneQueue,
-		fileFocus:    FocusInput,
-		queueSection: SectionActive,
-		selected:     make(map[int]bool),
-		markedFiles:  make(map[string]bool),
-		matchedFiles: make(map[string]bool),
-		stagedFiles:  []StagedFile{},
-		textInput:    ti,
-		currentDir:   currentDir,
-		args:         args,
+		layoutMode:      LayoutSingle,
+		activePane:      PaneQueue,
+		fileFocus:       FocusInput,
+		queueSection:    SectionActive,
+		selected:        make(map[int]bool),
+		markedFiles:     make(map[string]bool),
+		matchedFiles:    make(map[string]bool),
+		dirCursorMemory: make(map[string]int),
+		stagedFiles:     []StagedFile{},
+		textInput:       ti,
+		currentDir:      currentDir,
+		args:            args,
 	}
 
 	// If args provided, start with files pane focused
@@ -814,10 +816,45 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "left", "h", "backspace":
 		if m.fileFocus == FocusFileList && m.currentDir != "/" {
+			// Save current cursor position for this directory
+			m.dirCursorMemory[m.currentDir] = m.fileCursor
+			
+			// Remember which directory we're leaving (to position cursor on it)
+			previousDir := m.currentDir
+			previousDirName := filepath.Base(previousDir)
+			
 			// Go to parent directory
-			m.currentDir = filepath.Dir(m.currentDir)
-			m.fileCursor = 0
+			parentDir := filepath.Dir(m.currentDir)
+			m.currentDir = parentDir
+			
 			m.loadDirectory()
+			
+			// Try to position cursor on the directory we just left
+			foundPrevDir := false
+			for i, file := range m.files {
+				if file.IsDir && file.Name == previousDirName {
+					m.fileCursor = i
+					foundPrevDir = true
+					break
+				}
+			}
+			
+			// If we didn't find the previous directory, restore saved position or default to 0
+			if !foundPrevDir {
+				if savedCursor, exists := m.dirCursorMemory[parentDir]; exists {
+					m.fileCursor = savedCursor
+				} else {
+					m.fileCursor = 0
+				}
+			}
+			
+			// Ensure cursor is within bounds
+			if m.fileCursor >= len(m.files) {
+				m.fileCursor = len(m.files) - 1
+			}
+			if m.fileCursor < 0 {
+				m.fileCursor = 0
+			}
 		}
 		return m, nil
 
@@ -825,10 +862,28 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.fileFocus == FocusFileList && m.fileCursor < len(m.files) {
 			file := m.files[m.fileCursor]
 			if file.IsDir {
+				// Save current cursor position for this directory
+				m.dirCursorMemory[m.currentDir] = m.fileCursor
+				
 				// Navigate into directory
 				m.currentDir = file.Path
-				m.fileCursor = 0
+				
+				// Restore cursor position if we've been to this directory before
+				if savedCursor, exists := m.dirCursorMemory[file.Path]; exists {
+					m.fileCursor = savedCursor
+				} else {
+					m.fileCursor = 0
+				}
+				
 				m.loadDirectory()
+				
+				// Ensure cursor is within bounds after loading
+				if m.fileCursor >= len(m.files) {
+					m.fileCursor = len(m.files) - 1
+				}
+				if m.fileCursor < 0 {
+					m.fileCursor = 0
+				}
 			} else if file.IsPrintable {
 				// For printable files, right arrow acts like space (mark/unmark)
 				if m.markedFiles[file.Path] {
