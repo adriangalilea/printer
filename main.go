@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.9"
+const version = "0.1.0"
 
 var (
 	// Base styles
@@ -23,69 +23,69 @@ var (
 
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FAFAFA")).
-			Background(lipgloss.Color("#7D56F4")).
+			Foreground(theme.Text).
+			Background(theme.Mauve).
 			Padding(0, 2)
 
 	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#01FAC6")).
+			Foreground(theme.Green).
 			Bold(true)
 
 	normalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#DDDDDD"))
+			Foreground(theme.Text)
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262"))
+			Foreground(theme.Surface2)
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262")).
+			Foreground(theme.Overlay0).
 			Padding(1, 0)
 
 	// File browser styles
 	fileStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#DDDDDD"))
+			Foreground(theme.Text)
 
 	dirStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7D56F4")).
+			Foreground(theme.Blue).
 			Bold(true)
 
 	printableStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#01FAC6"))
+			Foreground(theme.Teal)
 
 	selectedFileStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#000000")).
-				Background(lipgloss.Color("#01FAC6")).
+				Foreground(theme.Base).
+				Background(theme.Green).
 				Bold(true)
 
 	markedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFD700")).
+			Foreground(theme.Yellow).
 			Bold(true)
 
 	matchedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("#3C3C3C")).
-			Foreground(lipgloss.Color("#DDDDDD"))
+			Background(theme.Surface1).
+			Foreground(theme.Text)
 
 	stagedHeaderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#01FAC6")).
+				Foreground(theme.Green).
 				Bold(true)
 
 	activeHeaderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FF6B6B")).
+				Foreground(theme.Red).
 				Bold(true)
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF6B6B")).
+			Foreground(theme.Red).
 			Bold(true)
 
 	// Border styles
 	activeBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("#01FAC6")).
+				BorderForeground(theme.Green).
 				Padding(0, 1)
 
 	inactiveBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("#626262")).
+				BorderForeground(theme.Surface2).
 				Padding(0, 1)
 )
 
@@ -1170,7 +1170,7 @@ func (m model) renderCurrentPath(width int) string {
 	}
 	
 	pathStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#7D56F4")).
+		Foreground(theme.Lavender).
 		Bold(true).
 		Padding(0, 1). // Add padding instead of centering
 		Width(width)

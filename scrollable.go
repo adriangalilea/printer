@@ -168,7 +168,7 @@ func (s *ScrollableArea) getScrollbarChar(lineIndex int) string {
 			return dimStyle.Render(" ▲")
 		} else {
 			// Show dimmed/inactive up arrow
-			return dimStyle.Copy().Foreground(lipgloss.Color("#333333")).Render(" ▲")
+			return dimStyle.Copy().Foreground(theme.Surface0).Render(" ▲")
 		}
 	}
 	if lineIndex == s.height-1 {
@@ -176,7 +176,7 @@ func (s *ScrollableArea) getScrollbarChar(lineIndex int) string {
 			return dimStyle.Render(" ▼")
 		} else {
 			// Show dimmed/inactive down arrow
-			return dimStyle.Copy().Foreground(lipgloss.Color("#333333")).Render(" ▼")
+			return dimStyle.Copy().Foreground(theme.Surface0).Render(" ▼")
 		}
 	}
 	

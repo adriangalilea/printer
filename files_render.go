@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"strings"
-	"github.com/charmbracelet/lipgloss"
 )
 
 func (m *model) renderFilesContent(width, height int) string {
@@ -103,10 +102,10 @@ func (m *model) renderFilesContent(width, height int) string {
 				// Cursor position - highest priority
 				if isMarked {
 					// Cursor + marked
-					styledLine = selectedFileStyle.Copy().Background(lipgloss.Color("#FFD700")).Render(line)
+					styledLine = selectedFileStyle.Copy().Background(theme.Yellow).Render(line)
 				} else if isMatched {
 					// Cursor + matched
-					styledLine = selectedFileStyle.Copy().Background(lipgloss.Color("#3C3C3C")).Render(line)
+					styledLine = selectedFileStyle.Copy().Background(theme.Surface1).Render(line)
 				} else {
 					// Just cursor
 					styledLine = selectedFileStyle.Render(line)
