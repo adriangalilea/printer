@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.3"
+const version = "0.0.4"
 
 var (
 	// Base styles
@@ -135,10 +135,11 @@ type PrintJob struct {
 }
 
 type StagedFile struct {
-	Name    string
-	Path    string
-	Size    int64
-	AddedAt time.Time
+	Name       string
+	Path       string
+	StagedFrom string // Directory this was staged from
+	Size       int64
+	AddedAt    time.Time
 }
 
 type model struct {
@@ -464,19 +465,23 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.queueSection == SectionActive {
 			if m.activeCursor < len(m.jobs)-1 {
 				m.activeCursor++
-			} else if len(m.stagedFiles) > 0 {
-				// Move to staged section
-				m.queueSection = SectionStaged
-				m.stagedCursor = 0
-			} else if m.layoutMode != LayoutSingle {
-				// No staged files, go to files pane
-				m.activePane = PaneFiles
-				m.fileFocus = FocusInput
-				m.textInput.Focus()
-				return m, textinput.Blink
+			} else {
+				relativeStagedFiles := m.getRelativeStagedFiles()
+				if len(relativeStagedFiles) > 0 {
+					// Move to staged section
+					m.queueSection = SectionStaged
+					m.stagedCursor = 0
+				} else if m.layoutMode != LayoutSingle {
+					// No staged files, go to files pane
+					m.activePane = PaneFiles
+					m.fileFocus = FocusInput
+					m.textInput.Focus()
+					return m, textinput.Blink
+				}
 			}
 		} else {
-			if m.stagedCursor < len(m.stagedFiles)-1 {
+			relativeStagedFiles := m.getRelativeStagedFiles()
+			if m.stagedCursor < len(relativeStagedFiles)-1 {
 				m.stagedCursor++
 			} else if m.layoutMode != LayoutSingle {
 				// At bottom of staged, move to files pane
@@ -506,13 +511,25 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
 			cancelPrintJob(m.jobs[m.activeCursor].ID)
 			m.refreshJobs()
-		} else if m.queueSection == SectionStaged && m.stagedCursor < len(m.stagedFiles) {
-			// Remove from staged and unmark
-			if m.stagedCursor < len(m.stagedFiles) {
-				filePath := m.stagedFiles[m.stagedCursor].Path
+		} else if m.queueSection == SectionStaged {
+			// Get relative files for current directory
+			relativeStagedFiles := m.getRelativeStagedFiles()
+			if m.stagedCursor < len(relativeStagedFiles) {
+				// Remove from staged and unmark
+				filePath := relativeStagedFiles[m.stagedCursor].Path
 				delete(m.markedFiles, filePath)
-				m.stagedFiles = append(m.stagedFiles[:m.stagedCursor], m.stagedFiles[m.stagedCursor+1:]...)
-				if m.stagedCursor >= len(m.stagedFiles) && m.stagedCursor > 0 {
+				
+				// Remove from the main staged files list
+				for i := len(m.stagedFiles) - 1; i >= 0; i-- {
+					if m.stagedFiles[i].Path == filePath {
+						m.stagedFiles = append(m.stagedFiles[:i], m.stagedFiles[i+1:]...)
+						break
+					}
+				}
+				
+				// Adjust cursor for relative list
+				newRelativeFiles := m.getRelativeStagedFiles()
+				if m.stagedCursor >= len(newRelativeFiles) && m.stagedCursor > 0 {
 					m.stagedCursor--
 				}
 			}
@@ -521,8 +538,11 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
 			openFile(m.jobs[m.activeCursor].FilePath)
-		} else if m.queueSection == SectionStaged && m.stagedCursor < len(m.stagedFiles) {
-			openFile(m.stagedFiles[m.stagedCursor].Path)
+		} else if m.queueSection == SectionStaged {
+			relativeStagedFiles := m.getRelativeStagedFiles()
+			if m.stagedCursor < len(relativeStagedFiles) {
+				openFile(relativeStagedFiles[m.stagedCursor].Path)
+			}
 		}
 
 	case "O":
@@ -578,10 +598,11 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							if f.Path == path && f.IsPrintable {
 								m.markedFiles[path] = true
 								m.stagedFiles = append(m.stagedFiles, StagedFile{
-									Name:    f.Name,
-									Path:    f.Path,
-									Size:    f.Size,
-									AddedAt: time.Now(),
+									Name:       f.Name,
+									Path:       f.Path,
+									StagedFrom: m.currentDir,
+									Size:       f.Size,
+									AddedAt:    time.Now(),
 								})
 								break
 							}
@@ -612,9 +633,10 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.activePane = PaneQueue
 				m.textInput.Blur()
 				// Go to bottom of staged or active section
-				if len(m.stagedFiles) > 0 {
+				relativeStagedFiles := m.getRelativeStagedFiles()
+				if len(relativeStagedFiles) > 0 {
 					m.queueSection = SectionStaged
-					m.stagedCursor = len(m.stagedFiles) - 1
+					m.stagedCursor = len(relativeStagedFiles) - 1
 				} else if len(m.jobs) > 0 {
 					m.queueSection = SectionActive
 					m.activeCursor = len(m.jobs) - 1
@@ -681,10 +703,11 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.markedFiles[file.Path] = true
 					// Add to staged files
 					m.stagedFiles = append(m.stagedFiles, StagedFile{
-						Name:    file.Name,
-						Path:    file.Path,
-						Size:    file.Size,
-						AddedAt: time.Now(),
+						Name:       file.Name,
+						Path:       file.Path,
+						StagedFrom: m.currentDir,
+						Size:       file.Size,
+						AddedAt:    time.Now(),
 					})
 				}
 			}
@@ -765,10 +788,11 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						if f.IsPrintable && !m.markedFiles[f.Path] {
 							m.markedFiles[f.Path] = true
 							m.stagedFiles = append(m.stagedFiles, StagedFile{
-								Name:    f.Name,
-								Path:    f.Path,
-								Size:    f.Size,
-								AddedAt: time.Now(),
+								Name:       f.Name,
+								Path:       f.Path,
+								StagedFrom: m.currentDir,
+								Size:       f.Size,
+								AddedAt:    time.Now(),
 							})
 						}
 					}
@@ -787,10 +811,11 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// Mark and add to staged
 					m.markedFiles[file.Path] = true
 					m.stagedFiles = append(m.stagedFiles, StagedFile{
-						Name:    file.Name,
-						Path:    file.Path,
-						Size:    file.Size,
-						AddedAt: time.Now(),
+						Name:       file.Name,
+						Path:       file.Path,
+						StagedFrom: m.currentDir,
+						Size:       file.Size,
+						AddedAt:    time.Now(),
 					})
 				}
 			}
@@ -825,11 +850,12 @@ func (m model) viewSinglePane() string {
 
 func (m model) viewSplitHorizontal() string {
 	const helpHeight = 2 // Help bar needs more space
+	const pathHeight = 1 // Height for the path display
 
 	// Calculate pane dimensions
 	leftWidth := m.width / 2
 	rightWidth := m.width - leftWidth
-	paneHeight := m.height - helpHeight
+	paneHeight := m.height - helpHeight - pathHeight
 
 	// Queue pane
 	queueBorder := inactiveBorderStyle
@@ -853,20 +879,26 @@ func (m model) viewSplitHorizontal() string {
 		Height(paneHeight - 2).
 		Render(filesContent)
 
-	// Join and add help
-	content := lipgloss.JoinHorizontal(lipgloss.Top, queuePane, filesPane)
+	// Join panes horizontally
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, queuePane, filesPane)
+	
+	// Add current path at the top
+	path := m.renderCurrentPath(m.width)
+	
+	// Add help bar
 	help := m.renderHelpBar()
 
-	return content + help
+	return path + "\n" + panes + help
 }
 
 func (m model) viewSplitVertical() string {
 	const helpHeight = 2 // Help bar needs more space
+	const pathHeight = 1 // Height for the path display
 
 	// Calculate pane heights
-	availableHeight := m.height - helpHeight
-	topHeight := availableHeight / 2
-	bottomHeight := availableHeight - topHeight
+	availableHeight := m.height - helpHeight - pathHeight
+	topHeight := (availableHeight - 1) / 2  // -1 for the path divider
+	bottomHeight := availableHeight - topHeight - 1
 
 	// Queue pane
 	queueBorder := inactiveBorderStyle
@@ -879,6 +911,9 @@ func (m model) viewSplitVertical() string {
 		Height(topHeight - 2).
 		Render(queueContent)
 
+	// Current path display (between panes)
+	path := m.renderCurrentPath(m.width)
+
 	// Files pane
 	filesBorder := inactiveBorderStyle
 	if m.activePane == PaneFiles {
@@ -890,8 +925,8 @@ func (m model) viewSplitVertical() string {
 		Height(bottomHeight - 2).
 		Render(filesContent)
 
-	// Join and add help
-	content := lipgloss.JoinVertical(lipgloss.Left, queuePane, filesPane)
+	// Join vertically with path in between
+	content := lipgloss.JoinVertical(lipgloss.Left, queuePane, path, filesPane)
 	help := m.renderHelpBar()
 
 	return content + help
@@ -920,6 +955,48 @@ func (m model) renderHelpBar() string {
 	return helpStyle.Copy().
 		Width(m.width - 2).
 		Render(helpText)
+}
+
+func (m model) renderCurrentPath(width int) string {
+	displayDir := m.currentDir
+	if home, _ := os.UserHomeDir(); strings.HasPrefix(displayDir, home) {
+		displayDir = "~" + strings.TrimPrefix(displayDir, home)
+	}
+	
+	// Truncate if too long
+	if len(displayDir) > width-6 && width > 6 {
+		displayDir = "..." + displayDir[len(displayDir)-(width-9):]
+	}
+	
+	pathStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7D56F4")).
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(width)
+		
+	return pathStyle.Render("📂 " + displayDir)
+}
+
+func (m model) getRelativeStagedFiles() []StagedFile {
+	// Return ALL staged files - they'll be shown with relative paths
+	return m.stagedFiles
+}
+
+func (m model) formatStagedFileName(file StagedFile) string {
+	// Always show relative path from current directory
+	relPath, err := filepath.Rel(m.currentDir, file.Path)
+	if err != nil {
+		// If we can't get relative path, show full path
+		return file.Path
+	}
+	
+	// If file is in current directory, just show the name
+	if !strings.Contains(relPath, string(filepath.Separator)) && !strings.HasPrefix(relPath, "..") {
+		return relPath
+	}
+	
+	// Otherwise show the relative path (could be ../, ../../, subdirs/, etc.)
+	return relPath
 }
 
 func (m model) viewQueuePane() string {
@@ -1041,14 +1118,15 @@ func (m model) renderQueueContent(width, height int) string {
 	content.WriteString(dimStyle.Render(strings.Repeat("─", width)))
 	content.WriteString("\n\n")
 
-	// Staged files section
-	content.WriteString(stagedHeaderStyle.Render("📄 STAGED"))
+	// Staged files section - show files relative to current directory
+	relativeStagedFiles := m.getRelativeStagedFiles()
+	content.WriteString(stagedHeaderStyle.Render(fmt.Sprintf("📄 STAGED (%d)", len(relativeStagedFiles))))
 	content.WriteString("\n")
 
-	if len(m.stagedFiles) == 0 {
-		content.WriteString(dimStyle.Render("  No staged files (use space to mark)"))
+	if len(relativeStagedFiles) == 0 {
+		content.WriteString(dimStyle.Render("  No staged files in current directory"))
 	} else {
-		// Show all staged files as an interactive list
+		// Show all relative staged files as an interactive list
 		stagedStart := 0
 		stagedVisible := stagedHeight - 3
 
@@ -1058,19 +1136,19 @@ func (m model) renderQueueContent(width, height int) string {
 		}
 
 		stagedEnd := stagedStart + stagedVisible
-		if stagedEnd > len(m.stagedFiles) {
-			stagedEnd = len(m.stagedFiles)
+		if stagedEnd > len(relativeStagedFiles) {
+			stagedEnd = len(relativeStagedFiles)
 		}
 
 		for i := stagedStart; i < stagedEnd; i++ {
-			file := m.stagedFiles[i]
+			file := relativeStagedFiles[i]
 
 			cursor := "  "
 			if i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged {
 				cursor = "▶ "
 			}
 
-			fileName := file.Name
+			fileName := m.formatStagedFileName(file)
 			if len(fileName) > width-10 && width > 10 {
 				fileName = fileName[:width-13] + "..."
 			}
@@ -1089,9 +1167,9 @@ func (m model) renderQueueContent(width, height int) string {
 		}
 
 		// Show count if there are more items than visible
-		if len(m.stagedFiles) > stagedVisible {
+		if len(relativeStagedFiles) > stagedVisible {
 			content.WriteString("\n")
-			content.WriteString(dimStyle.Render(fmt.Sprintf("  (%d/%d)", m.stagedCursor+1, len(m.stagedFiles))))
+			content.WriteString(dimStyle.Render(fmt.Sprintf("  (%d/%d)", m.stagedCursor+1, len(relativeStagedFiles))))
 		}
 	}
 
@@ -1110,23 +1188,13 @@ func (m model) renderFilesContent(width, height int) string {
 	content.WriteString(m.textInput.View())
 	content.WriteString("\n")
 
-	// Current directory
-	displayDir := m.currentDir
-	if home, _ := os.UserHomeDir(); strings.HasPrefix(displayDir, home) {
-		displayDir = "~" + strings.TrimPrefix(displayDir, home)
-	}
-	if len(displayDir) > width-5 && width > 5 {
-		displayDir = "..." + displayDir[len(displayDir)-(width-8):]
-	}
-	content.WriteString(dimStyle.Render("📂 " + displayDir))
-	content.WriteString("\n")
 
 	// File list
 	if len(m.files) == 0 {
 		content.WriteString(dimStyle.Render("No files"))
 	} else {
-		// Calculate visible files (account for title, input, path)
-		visibleFiles := height - 5
+		// Calculate visible files (account for title, input)
+		visibleFiles := height - 4
 		if visibleFiles < 1 {
 			visibleFiles = 1
 		}
