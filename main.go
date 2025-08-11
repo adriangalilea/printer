@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.6"
+const version = "0.0.7"
 
 var (
 	// Base styles
@@ -164,9 +164,9 @@ type model struct {
 	currentDir   string
 	files        []FileItem
 	fileCursor   int
-	fileOffset   int
 	markedFiles  map[string]bool // Files checked for staging
 	matchedFiles map[string]bool // Files matching pattern (visual only)
+
 
 	errorMsg string
 	args     []string
@@ -491,6 +491,57 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			}
 		}
+	
+	case "pgup", "ctrl+u":
+		// Page up in queue
+		if m.queueSection == SectionActive {
+			newCursor := m.activeCursor - 5
+			if newCursor < 0 {
+				newCursor = 0
+			}
+			m.activeCursor = newCursor
+		} else {
+			newCursor := m.stagedCursor - 5
+			if newCursor < 0 {
+				// Switch to active section if we have jobs
+				if len(m.jobs) > 0 {
+					m.queueSection = SectionActive
+					m.activeCursor = 0
+				} else {
+					m.stagedCursor = 0
+				}
+			} else {
+				m.stagedCursor = newCursor
+			}
+		}
+	
+	case "pgdown", "ctrl+d":
+		// Page down in queue
+		if m.queueSection == SectionActive {
+			newCursor := m.activeCursor + 5
+			if newCursor >= len(m.jobs) {
+				// Switch to staged section if we have staged files
+				relativeStagedFiles := m.getRelativeStagedFiles()
+				if len(relativeStagedFiles) > 0 {
+					m.queueSection = SectionStaged
+					m.stagedCursor = 0
+				} else {
+					m.activeCursor = len(m.jobs) - 1
+				}
+			} else {
+				m.activeCursor = newCursor
+			}
+		} else {
+			relativeStagedFiles := m.getRelativeStagedFiles()
+			newCursor := m.stagedCursor + 5
+			if newCursor >= len(relativeStagedFiles) {
+				newCursor = len(relativeStagedFiles) - 1
+			}
+			if newCursor < 0 {
+				newCursor = 0
+			}
+			m.stagedCursor = newCursor
+		}
 
 	case "a", "f":
 		// Switch to files pane
@@ -695,7 +746,6 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Navigate into directory
 				m.currentDir = file.Path
 				m.fileCursor = 0
-				m.fileOffset = 0
 				m.loadDirectory()
 			} else if file.IsPrintable {
 				// Stage single file if not already staged
@@ -734,13 +784,39 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	
+	case "pgup", "ctrl+u":
+		// Page up
+		if m.fileFocus == FocusFileList {
+			// Move cursor up by 5 items
+			newCursor := m.fileCursor - 5
+			if newCursor < 0 {
+				newCursor = 0
+			}
+			m.fileCursor = newCursor
+		}
+		return m, nil
+	
+	case "pgdown", "ctrl+d":
+		// Page down
+		if m.fileFocus == FocusFileList {
+			// Move cursor down by 5 items
+			newCursor := m.fileCursor + 5
+			if newCursor >= len(m.files) {
+				newCursor = len(m.files) - 1
+			}
+			if newCursor < 0 {
+				newCursor = 0
+			}
+			m.fileCursor = newCursor
+		}
+		return m, nil
 
 	case "left", "h", "backspace":
 		if m.fileFocus == FocusFileList && m.currentDir != "/" {
 			// Go to parent directory
 			m.currentDir = filepath.Dir(m.currentDir)
 			m.fileCursor = 0
-			m.fileOffset = 0
 			m.loadDirectory()
 		}
 		return m, nil
@@ -752,7 +828,6 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Navigate into directory
 				m.currentDir = file.Path
 				m.fileCursor = 0
-				m.fileOffset = 0
 				m.loadDirectory()
 			} else if file.IsPrintable {
 				// For printable files, right arrow acts like space (mark/unmark)
@@ -1113,6 +1188,14 @@ func (m model) getDirectoryStatus(dirPath string) (totalPrintable int, stagedCou
 	return totalPrintable, stagedCount, printingCount
 }
 
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (m model) getSelectionSymbol(file FileItem) string {
 	if file.IsDir {
 		total, staged, printing := m.getDirectoryStatus(file.Path)
@@ -1210,256 +1293,7 @@ func (m model) viewFilesPane() string {
 	)
 }
 
-func (m model) renderQueueContent(width, height int) string {
-	if height <= 0 {
-		return ""
-	}
 
-	var content strings.Builder
-
-	// Calculate space for each section (split evenly)
-	// Reserve space for headers and separator
-	availableHeight := height - 5 // 2 headers, separator, spacing
-	activeHeight := availableHeight / 2
-	stagedHeight := availableHeight - activeHeight
-
-	// Ensure minimum heights
-	if activeHeight < 2 {
-		activeHeight = 2
-	}
-	if stagedHeight < 2 {
-		stagedHeight = 2
-	}
-
-	// Active print jobs section
-	content.WriteString(activeHeaderStyle.Render("🖨  PRINTING"))
-	content.WriteString("\n")
-
-	if len(m.jobs) == 0 {
-		content.WriteString(dimStyle.Render("  No active jobs"))
-	} else {
-		for i, job := range m.jobs {
-			if i >= activeHeight-2 {
-				break
-			}
-
-			cursor := "  "
-			if i == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
-				cursor = "▶ "
-			}
-
-			// Jobs in queue are actively printing
-			statusSymbol := "● "
-
-			fileName := job.FileName
-			if len(fileName) > width-20 && width > 20 {
-				fileName = fileName[:width-23] + "..."
-			}
-
-			line := fmt.Sprintf("%s%s%s", cursor, statusSymbol, fileName)
-
-			if i == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
-				content.WriteString(selectedStyle.Render(line))
-			} else {
-				content.WriteString(normalStyle.Render(line))
-			}
-			content.WriteString("\n")
-		}
-	}
-
-	// Separator
-	content.WriteString("\n")
-	content.WriteString(dimStyle.Render(strings.Repeat("─", width)))
-	content.WriteString("\n\n")
-
-	// Staged files section - show files relative to current directory
-	relativeStagedFiles := m.getRelativeStagedFiles()
-	content.WriteString(stagedHeaderStyle.Render(fmt.Sprintf("📄 STAGED (%d)", len(relativeStagedFiles))))
-	content.WriteString("\n")
-
-	if len(relativeStagedFiles) == 0 {
-		content.WriteString(dimStyle.Render("  No staged files in current directory"))
-	} else {
-		// Show all relative staged files as an interactive list
-		stagedStart := 0
-		stagedVisible := stagedHeight - 3
-
-		// Handle scrolling for staged section
-		if m.queueSection == SectionStaged && m.stagedCursor >= stagedStart+stagedVisible {
-			stagedStart = m.stagedCursor - stagedVisible + 1
-		}
-
-		stagedEnd := stagedStart + stagedVisible
-		if stagedEnd > len(relativeStagedFiles) {
-			stagedEnd = len(relativeStagedFiles)
-		}
-
-		for i := stagedStart; i < stagedEnd; i++ {
-			file := relativeStagedFiles[i]
-
-			cursor := "  "
-			if i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged {
-				cursor = "▶ "
-			}
-
-			// Staged files use the circle with dot symbol
-			statusSymbol := "◉ "
-
-			fileName := m.formatStagedFileName(file)
-			if len(fileName) > width-10 && width > 10 {
-				fileName = fileName[:width-13] + "..."
-			}
-
-			line := fmt.Sprintf("%s%s%s", cursor, statusSymbol, fileName)
-
-			if i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged {
-				content.WriteString(selectedStyle.Render(line))
-			} else {
-				content.WriteString(printableStyle.Render(line))
-			}
-
-			if i < stagedEnd-1 {
-				content.WriteString("\n")
-			}
-		}
-
-		// Show count if there are more items than visible
-		if len(relativeStagedFiles) > stagedVisible {
-			content.WriteString("\n")
-			content.WriteString(dimStyle.Render(fmt.Sprintf("  (%d/%d)", m.stagedCursor+1, len(relativeStagedFiles))))
-		}
-	}
-
-	return content.String()
-}
-
-func (m model) renderFilesContent(width, height int) string {
-	if height <= 0 {
-		return ""
-	}
-
-	var content strings.Builder
-	content.WriteString("📁 File Browser\n\n")
-
-	// Input field
-	content.WriteString(m.textInput.View())
-	content.WriteString("\n")
-
-
-	// File list
-	if len(m.files) == 0 {
-		content.WriteString(dimStyle.Render("No files"))
-	} else {
-		// Calculate visible files (account for title, input)
-		visibleFiles := height - 4
-		if visibleFiles < 1 {
-			visibleFiles = 1
-		}
-		if m.fileCursor >= m.fileOffset+visibleFiles {
-			m.fileOffset = m.fileCursor - visibleFiles + 1
-		} else if m.fileCursor < m.fileOffset {
-			m.fileOffset = m.fileCursor
-		}
-
-		end := m.fileOffset + visibleFiles
-		if end > len(m.files) {
-			end = len(m.files)
-		}
-
-		for i := m.fileOffset; i < end; i++ {
-			file := m.files[i]
-
-			// Cursor indicator
-			cursor := "  "
-			if i == m.fileCursor && m.activePane == PaneFiles {
-				cursor = "▶ "
-			}
-
-			// Get selection symbol based on file state
-			selectionSymbol := m.getSelectionSymbol(file)
-
-			// Format file name
-			displayName := file.Name
-			maxNameLen := width - 10
-			if len(displayName) > maxNameLen && maxNameLen > 0 {
-				displayName = displayName[:maxNameLen-3] + "..."
-			}
-
-			// Special handling for toggle all item
-			if file.Path == "TOGGLE_ALL" {
-				// Check if all are selected to show appropriate symbol
-				allMarked := true
-				for _, f := range m.files {
-					if f.IsPrintable && !m.markedFiles[f.Path] {
-						allMarked = false
-						break
-					}
-				}
-				selectAllSymbol := "○ "
-				if allMarked {
-					selectAllSymbol = "◉ "
-				}
-				line := fmt.Sprintf("%s%s %s", cursor, selectAllSymbol, displayName)
-				content.WriteString(selectedStyle.Render(line))
-				if i < end-1 {
-					content.WriteString("\n")
-				}
-				continue
-			}
-
-			// Add type indicator
-			typeIndicator := ""
-			if file.IsDir {
-				typeIndicator = "📁 "
-			} else if file.IsPrintable {
-				typeIndicator = "📄 "
-			} else {
-				typeIndicator = "   "
-			}
-
-			line := fmt.Sprintf("%s%s%s%s", cursor, selectionSymbol, typeIndicator, displayName)
-
-			// Apply styles based on state combinations
-			var styledLine string
-			isCursor := i == m.fileCursor && m.activePane == PaneFiles && m.fileFocus == FocusFileList
-			isMarked := m.markedFiles[file.Path]
-			isMatched := m.matchedFiles[file.Path]
-
-			if isCursor {
-				// Cursor position - highest priority
-				if isMarked {
-					// Cursor + marked
-					styledLine = selectedFileStyle.Copy().Background(lipgloss.Color("#FFD700")).Render(line)
-				} else if isMatched {
-					// Cursor + matched
-					styledLine = selectedFileStyle.Copy().Background(lipgloss.Color("#3C3C3C")).Render(line)
-				} else {
-					// Just cursor
-					styledLine = selectedFileStyle.Render(line)
-				}
-			} else if isMarked {
-				// Marked file
-				styledLine = markedStyle.Render(line)
-			} else if isMatched {
-				// Matched by pattern
-				styledLine = matchedStyle.Render(line)
-			} else if file.IsDir {
-				styledLine = dirStyle.Render(line)
-			} else if file.IsPrintable {
-				styledLine = printableStyle.Render(line)
-			} else {
-				styledLine = dimStyle.Render(line)
-			}
-
-			content.WriteString(styledLine)
-			if i < end-1 {
-				content.WriteString("\n")
-			}
-		}
-	}
-
-	return content.String()
-}
 
 func formatSize(size int64) string {
 	const unit = 1024
