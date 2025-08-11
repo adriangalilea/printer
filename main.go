@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.8"
+const version = "0.0.9"
 
 var (
 	// Base styles
@@ -1172,7 +1172,7 @@ func (m model) renderCurrentPath(width int) string {
 	pathStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#7D56F4")).
 		Bold(true).
-		Align(lipgloss.Center).
+		Padding(0, 1). // Add padding instead of centering
 		Width(width)
 		
 	return pathStyle.Render("📂 " + displayDir)
