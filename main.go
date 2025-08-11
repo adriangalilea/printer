@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.5"
+const version = "0.0.6"
 
 var (
 	// Base styles
@@ -819,6 +819,55 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			} else if file.IsDir {
+				// Toggle all printable files in directory
+				total, staged, _ := m.getDirectoryStatus(file.Path)
+				if total > 0 {
+					entries, _ := ioutil.ReadDir(file.Path)
+					if staged == total {
+						// Unmark all files in directory
+						for _, entry := range entries {
+							if !entry.IsDir() {
+								fullPath := filepath.Join(file.Path, entry.Name())
+								delete(m.markedFiles, fullPath)
+								// Remove from staged
+								for i := len(m.stagedFiles) - 1; i >= 0; i-- {
+									if m.stagedFiles[i].Path == fullPath {
+										m.stagedFiles = append(m.stagedFiles[:i], m.stagedFiles[i+1:]...)
+									}
+								}
+							}
+						}
+					} else {
+						// Mark all printable files in directory
+						for _, entry := range entries {
+							if !entry.IsDir() {
+								ext := strings.ToLower(filepath.Ext(entry.Name()))
+								printableExts := []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
+								isPrintable := false
+								for _, pExt := range printableExts {
+									if ext == pExt {
+										isPrintable = true
+										break
+									}
+								}
+								if isPrintable {
+									fullPath := filepath.Join(file.Path, entry.Name())
+									if !m.markedFiles[fullPath] {
+										m.markedFiles[fullPath] = true
+										m.stagedFiles = append(m.stagedFiles, StagedFile{
+											Name:       entry.Name(),
+											Path:       fullPath,
+											StagedFrom: file.Path,
+											Size:       entry.Size(),
+											AddedAt:    time.Now(),
+										})
+									}
+								}
+							}
+						}
+					}
+				}
 			} else if file.IsPrintable {
 				if m.markedFiles[file.Path] {
 					// Unmark and remove from staged
@@ -1021,6 +1070,91 @@ func (m model) formatStagedFileName(file StagedFile) string {
 	return relPath
 }
 
+func (m model) getDirectoryStatus(dirPath string) (totalPrintable int, stagedCount int, printingCount int) {
+	// Read directory to count printable files
+	entries, err := ioutil.ReadDir(dirPath)
+	if err != nil {
+		return 0, 0, 0
+	}
+	
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			// Check if printable
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			printableExts := []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
+			isPrintable := false
+			for _, pExt := range printableExts {
+				if ext == pExt {
+					isPrintable = true
+					break
+				}
+			}
+			
+			if isPrintable {
+				totalPrintable++
+				fullPath := filepath.Join(dirPath, entry.Name())
+				
+				// Check if staged
+				if m.markedFiles[fullPath] {
+					stagedCount++
+				}
+				
+				// Check if in print queue
+				for _, job := range m.jobs {
+					if job.FilePath == fullPath {
+						printingCount++
+						break
+					}
+				}
+			}
+		}
+	}
+	
+	return totalPrintable, stagedCount, printingCount
+}
+
+func (m model) getSelectionSymbol(file FileItem) string {
+	if file.IsDir {
+		total, staged, printing := m.getDirectoryStatus(file.Path)
+		if total == 0 {
+			return "  " // No printable files
+		}
+		if printing == total {
+			return "● " // All printing
+		}
+		if staged == total {
+			return "◉ " // All staged
+		}
+		if staged > 0 {
+			return "◑ " // Partially staged
+		}
+		return "○ " // Has printable files, none staged
+	}
+	
+	if !file.IsPrintable {
+		return "  " // Not printable
+	}
+	
+	// Check if in print queue
+	for _, job := range m.jobs {
+		if job.FilePath == file.Path {
+			return "● " // Printing
+		}
+	}
+	
+	// Check if staged
+	if m.markedFiles[file.Path] {
+		return "◉ " // Staged
+	}
+	
+	// Check if matches pattern
+	if m.matchedFiles[file.Path] {
+		return "◎ " // Matches pattern
+	}
+	
+	return "○ " // Available
+}
+
 func (m model) viewQueuePane() string {
 	// Calculate dimensions
 	contentHeight := m.height - 4 // Title, spacing, help
@@ -1114,17 +1248,15 @@ func (m model) renderQueueContent(width, height int) string {
 				cursor = "▶ "
 			}
 
-			selected := " "
-			if m.selected[i] {
-				selected = "✓"
-			}
+			// Jobs in queue are actively printing
+			statusSymbol := "● "
 
 			fileName := job.FileName
 			if len(fileName) > width-20 && width > 20 {
 				fileName = fileName[:width-23] + "..."
 			}
 
-			line := fmt.Sprintf("%s[%s] %s", cursor, selected, fileName)
+			line := fmt.Sprintf("%s%s%s", cursor, statusSymbol, fileName)
 
 			if i == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
 				content.WriteString(selectedStyle.Render(line))
@@ -1170,12 +1302,15 @@ func (m model) renderQueueContent(width, height int) string {
 				cursor = "▶ "
 			}
 
+			// Staged files use the circle with dot symbol
+			statusSymbol := "◉ "
+
 			fileName := m.formatStagedFileName(file)
 			if len(fileName) > width-10 && width > 10 {
 				fileName = fileName[:width-13] + "..."
 			}
 
-			line := fmt.Sprintf("%s%s", cursor, fileName)
+			line := fmt.Sprintf("%s%s%s", cursor, statusSymbol, fileName)
 
 			if i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged {
 				content.WriteString(selectedStyle.Render(line))
@@ -1234,16 +1369,14 @@ func (m model) renderFilesContent(width, height int) string {
 		for i := m.fileOffset; i < end; i++ {
 			file := m.files[i]
 
-			// Cursor and selection indicators
+			// Cursor indicator
 			cursor := "  "
 			if i == m.fileCursor && m.activePane == PaneFiles {
 				cursor = "▶ "
 			}
 
-			marked := " "
-			if m.markedFiles[file.Path] {
-				marked = "✓"
-			}
+			// Get selection symbol based on file state
+			selectionSymbol := m.getSelectionSymbol(file)
 
 			// Format file name
 			displayName := file.Name
@@ -1254,7 +1387,19 @@ func (m model) renderFilesContent(width, height int) string {
 
 			// Special handling for toggle all item
 			if file.Path == "TOGGLE_ALL" {
-				line := fmt.Sprintf("%s    %s", cursor, displayName)
+				// Check if all are selected to show appropriate symbol
+				allMarked := true
+				for _, f := range m.files {
+					if f.IsPrintable && !m.markedFiles[f.Path] {
+						allMarked = false
+						break
+					}
+				}
+				selectAllSymbol := "○ "
+				if allMarked {
+					selectAllSymbol = "◉ "
+				}
+				line := fmt.Sprintf("%s%s %s", cursor, selectAllSymbol, displayName)
 				content.WriteString(selectedStyle.Render(line))
 				if i < end-1 {
 					content.WriteString("\n")
@@ -1263,14 +1408,16 @@ func (m model) renderFilesContent(width, height int) string {
 			}
 
 			// Add type indicator
-			typeIndicator := "   "
+			typeIndicator := ""
 			if file.IsDir {
 				typeIndicator = "📁 "
 			} else if file.IsPrintable {
 				typeIndicator = "📄 "
+			} else {
+				typeIndicator = "   "
 			}
 
-			line := fmt.Sprintf("%s[%s] %s%s", cursor, marked, typeIndicator, displayName)
+			line := fmt.Sprintf("%s%s%s%s", cursor, selectionSymbol, typeIndicator, displayName)
 
 			// Apply styles based on state combinations
 			var styledLine string
