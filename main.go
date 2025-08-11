@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.0.4"
+const version = "0.0.5"
 
 var (
 	// Base styles
@@ -754,6 +754,28 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.fileCursor = 0
 				m.fileOffset = 0
 				m.loadDirectory()
+			} else if file.IsPrintable {
+				// For printable files, right arrow acts like space (mark/unmark)
+				if m.markedFiles[file.Path] {
+					// Unmark and remove from staged
+					delete(m.markedFiles, file.Path)
+					for i := len(m.stagedFiles) - 1; i >= 0; i-- {
+						if m.stagedFiles[i].Path == file.Path {
+							m.stagedFiles = append(m.stagedFiles[:i], m.stagedFiles[i+1:]...)
+							break
+						}
+					}
+				} else {
+					// Mark and add to staged
+					m.markedFiles[file.Path] = true
+					m.stagedFiles = append(m.stagedFiles, StagedFile{
+						Name:       file.Name,
+						Path:       file.Path,
+						StagedFrom: m.currentDir,
+						Size:       file.Size,
+						AddedAt:    time.Now(),
+					})
+				}
 			}
 		}
 		return m, nil
