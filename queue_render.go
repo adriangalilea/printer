@@ -13,7 +13,23 @@ func (m *model) renderQueueContent(width, height int) string {
 	var result strings.Builder
 	
 	// Active print jobs header (not scrollable)
-	totalJobs := len(m.jobs) + len(m.printOps)
+	// Count deduplicated jobs
+	totalJobs := len(m.jobs)
+	// Add print operations that don't have corresponding system jobs
+	for _, op := range m.printOps {
+		hasSystemJob := false
+		for _, job := range m.jobs {
+			if job.FilePath == op.FilePath && job.FilePath != "" {
+				hasSystemJob = true
+				break
+			}
+		}
+		// Count operations that are not in system queue and not successfully sent
+		if !hasSystemJob && op.Status != StatusSent {
+			totalJobs++
+		}
+	}
+	
 	activeHeader := "🖨  PRINTING"
 	if totalJobs > 0 {
 		activeHeader = fmt.Sprintf("🖨  PRINTING (%d)", totalJobs)
@@ -71,8 +87,23 @@ func (m *model) renderQueueContent(width, height int) string {
 		}
 	}
 	
+	// FIXME: MASSIVE DEDUPLICATION PROBLEM!
+	// The deduplication logic is duplicated in multiple places:
+	// 1. Here in queue_render.go for display
+	// 2. In main.go getActualJobCount() 
+	// 3. In main.go for cursor navigation
+	// 4. In main.go for handling actions (cancel, open, etc.)
+	// 
+	// This needs to be centralized into a single source of truth!
+	// We should have ONE function that builds the deduplicated list
+	// and everything else should use that list.
+	//
+	// ALSO: Jobs without filenames (system jobs we didn't track) can't be canceled
+	// because we're matching by FilePath which is empty for those jobs.
+	// This breaks the cancel functionality for any job not initiated through our app.
+	//
 	// Build active jobs content for scrollable area
-	// Combine system jobs and our print operations
+	// Merge system jobs and our print operations, deduplicating by file path
 	
 	var activeContent strings.Builder
 	if totalJobs == 0 {
@@ -80,15 +111,59 @@ func (m *model) renderQueueContent(width, height int) string {
 	} else {
 		itemIndex := 0
 		
-		// First, show system print jobs
+		// Create a map of our print operations by file path for quick lookup
+		printOpsByPath := make(map[string]*PrintOperation)
+		for i := range m.printOps {
+			op := &m.printOps[i]
+			printOpsByPath[op.FilePath] = op
+		}
+		
+		// Track which print operations we've already shown (matched with system jobs)
+		shownOps := make(map[string]bool)
+		
+		// First, show system print jobs (enriched with our tracking data if available)
 		for _, job := range m.jobs {
 			cursor := "  "
 			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
 				cursor = "▶ "
 			}
 			
-			statusSymbol := "● "
+			// Check if we have tracking data for this job
+			var statusSymbol string
+			var statusStyle = normalStyle
 			fileName := job.FileName
+			
+			if op, exists := printOpsByPath[job.FilePath]; exists && job.FilePath != "" {
+				// We have tracking data for this job - use our enhanced status
+				shownOps[job.FilePath] = true
+				
+				switch op.Status {
+				case StatusPending:
+					statusSymbol = "⏳"
+					statusStyle = dimStyle
+				case StatusSending:
+					statusSymbol = "📤"
+					statusStyle = selectedStyle
+				case StatusSent: // If sent but still in system queue
+					statusSymbol = "● "
+					statusStyle = normalStyle
+				case StatusFailed:
+					statusSymbol = "✗ "
+					statusStyle = errorStyle
+				case StatusCanceled:
+					statusSymbol = "⊘ "
+					statusStyle = dimStyle
+				}
+				
+				// Use our filename if available
+				if op.FileName != "" {
+					fileName = op.FileName
+				}
+			} else {
+				// No tracking data - just show as active system job
+				statusSymbol = "● "
+			}
+			
 			if len(fileName) > width-10 && width > 10 {
 				fileName = fileName[:width-13] + "..."
 			}
@@ -98,7 +173,7 @@ func (m *model) renderQueueContent(width, height int) string {
 			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
 				activeContent.WriteString(selectedStyle.Render(line))
 			} else {
-				activeContent.WriteString(normalStyle.Render(line))
+				activeContent.WriteString(statusStyle.Render(line))
 			}
 			
 			if itemIndex < totalJobs-1 {
@@ -107,8 +182,19 @@ func (m *model) renderQueueContent(width, height int) string {
 			itemIndex++
 		}
 		
-		// Then, show our tracked print operations
+		// Then, show print operations that don't have corresponding system jobs
+		// (these are either completed, failed, or not yet in system queue)
 		for _, op := range m.printOps {
+			// Skip if we already showed this with a system job
+			if shownOps[op.FilePath] {
+				continue
+			}
+			
+			// Don't show successfully sent jobs that are no longer in system queue
+			if op.Status == StatusSent {
+				continue
+			}
+			
 			cursor := "  "
 			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
 				cursor = "▶ "
@@ -124,9 +210,6 @@ func (m *model) renderQueueContent(width, height int) string {
 			case StatusSending:
 				statusSymbol = "📤"
 				statusStyle = selectedStyle
-			case StatusSent:
-				statusSymbol = "✓ "
-				statusStyle = printableStyle
 			case StatusFailed:
 				statusSymbol = "✗ "
 				statusStyle = errorStyle
@@ -135,7 +218,6 @@ func (m *model) renderQueueContent(width, height int) string {
 				statusStyle = dimStyle
 			}
 			
-			// Format filename with relative path (reuse the logic from print_render.go)
 			fileName := op.FileName
 			if len(fileName) > width-15 && width > 15 {
 				fileName = fileName[:width-18] + "..."
@@ -158,9 +240,7 @@ func (m *model) renderQueueContent(width, height int) string {
 				activeContent.WriteString(statusStyle.Render(line))
 			}
 			
-			if itemIndex < totalJobs-1 {
-				activeContent.WriteString("\n")
-			}
+			activeContent.WriteString("\n")
 			itemIndex++
 		}
 	}

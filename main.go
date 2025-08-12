@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.1.2"
+const version = "0.1.4"
 
 var (
 	// Base styles
@@ -479,6 +479,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jobsRefreshedMsg:
 		// Update jobs from async refresh
 		m.jobs = msg.jobs
+		
+		// Clean up print operations that are successfully sent and no longer in system queue
+		var cleanedOps []PrintOperation
+		for _, op := range m.printOps {
+			// Keep if:
+			// 1. Still in system queue (has matching job)
+			// 2. Failed or canceled (user needs to see these)
+			// 3. Still sending/pending
+			keepOp := false
+			
+			// Check if in system queue
+			for _, job := range m.jobs {
+				if job.FilePath == op.FilePath && job.FilePath != "" {
+					keepOp = true
+					break
+				}
+			}
+			
+			// Keep failed, canceled, or still processing operations
+			if !keepOp && (op.Status == StatusFailed || op.Status == StatusCanceled || 
+				op.Status == StatusPending || op.Status == StatusSending) {
+				keepOp = true
+			}
+			
+			if keepOp {
+				cleanedOps = append(cleanedOps, op)
+			}
+		}
+		m.printOps = cleanedOps
+		
+		// Adjust cursor if needed
+		actualJobCount := m.getActualJobCount()
+		if m.activeCursor >= actualJobCount && actualJobCount > 0 {
+			m.activeCursor = actualJobCount - 1
+		}
+		
 		return m, nil
 
 	case PrintStatusMsg:
@@ -519,15 +555,17 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				// Move to active section
 				m.queueSection = SectionActive
-				if len(m.jobs) > 0 {
-					m.activeCursor = len(m.jobs) - 1
+				actualJobCount := m.getActualJobCount()
+				if actualJobCount > 0 {
+					m.activeCursor = actualJobCount - 1
 				}
 			}
 		}
 
 	case "down", "j":
 		if m.queueSection == SectionActive {
-			if m.activeCursor < len(m.jobs)-1 {
+			actualJobCount := m.getActualJobCount()
+			if m.activeCursor < actualJobCount-1 {
 				m.activeCursor++
 			} else {
 				relativeStagedFiles := m.getRelativeStagedFiles()
@@ -582,8 +620,9 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown", "ctrl+d":
 		// Page down in queue
 		if m.queueSection == SectionActive {
+			actualJobCount := m.getActualJobCount()
 			newCursor := m.activeCursor + 5
-			if newCursor >= len(m.jobs) {
+			if newCursor >= actualJobCount {
 				// Switch to staged section if we have staged files
 				relativeStagedFiles := m.getRelativeStagedFiles()
 				if len(relativeStagedFiles) > 0 {
@@ -629,27 +668,62 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "x":
 		if m.queueSection == SectionActive {
-			totalJobs := len(m.jobs) + len(m.printOps)
-			if m.activeCursor < totalJobs {
-				if m.activeCursor < len(m.jobs) {
+			// FIXME: This entire section duplicates the deduplication logic AGAIN!
+			// Also, jobs without FilePath (system jobs we didn't track) can't be canceled
+			// because the matching logic depends on FilePath being set.
+			// Build the deduplicated list to find what's at the cursor
+			itemIndex := 0
+			handled := false
+			
+			// First check system jobs
+			for _, job := range m.jobs {
+				if itemIndex == m.activeCursor {
 					// Cancel system job
-					cancelPrintJob(m.jobs[m.activeCursor].ID)
-					// Return command to refresh jobs async
-					return m, refreshJobsCmd()
-				} else {
-					// Handle print operation
-					opIndex := m.activeCursor - len(m.jobs)
-					op := &m.printOps[opIndex]
-					if op.Status == StatusSending || op.Status == StatusPending {
-						// Cancel active operation
-						op.Status = StatusCanceled
-						op.UpdatedAt = time.Now()
-					} else if op.Status == StatusFailed || op.Status == StatusCanceled || op.Status == StatusSent {
-						// Remove completed/failed/canceled operation
-						m.printOps = append(m.printOps[:opIndex], m.printOps[opIndex+1:]...)
-						if m.activeCursor >= len(m.jobs)+len(m.printOps) && m.activeCursor > 0 {
-							m.activeCursor--
+					cancelPrintJob(job.ID)
+					// Also cancel our tracking if we have it
+					for j := range m.printOps {
+						if m.printOps[j].FilePath == job.FilePath {
+							m.printOps[j].Status = StatusCanceled
+							m.printOps[j].UpdatedAt = time.Now()
+							break
 						}
+					}
+					handled = true
+					return m, refreshJobsCmd()
+				}
+				itemIndex++
+			}
+			
+			// Then check unmatched print operations
+			if !handled {
+				for i, op := range m.printOps {
+					// Skip if this operation has a system job
+					hasSystemJob := false
+					for _, job := range m.jobs {
+						if job.FilePath == op.FilePath && job.FilePath != "" {
+							hasSystemJob = true
+							break
+						}
+					}
+					
+					if !hasSystemJob && op.Status != StatusSent {
+						if itemIndex == m.activeCursor {
+							if op.Status == StatusSending || op.Status == StatusPending {
+								// Cancel active operation
+								m.printOps[i].Status = StatusCanceled
+								m.printOps[i].UpdatedAt = time.Now()
+							} else if op.Status == StatusFailed || op.Status == StatusCanceled {
+								// Remove completed/failed/canceled operation
+								m.printOps = append(m.printOps[:i], m.printOps[i+1:]...)
+								actualJobCount := m.getActualJobCount()
+								if m.activeCursor >= actualJobCount && m.activeCursor > 0 {
+									m.activeCursor--
+								}
+							}
+							handled = true
+							break
+						}
+						itemIndex++
 					}
 				}
 			}
@@ -1359,6 +1433,28 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// FIXME: This duplicates the deduplication logic from queue_render.go
+// We need ONE source of truth for the deduplicated job list!
+// getActualJobCount returns the deduplicated count of active jobs
+func (m model) getActualJobCount() int {
+	count := len(m.jobs)
+	// Add print operations that don't have corresponding system jobs
+	for _, op := range m.printOps {
+		hasSystemJob := false
+		for _, job := range m.jobs {
+			if job.FilePath == op.FilePath && job.FilePath != "" {
+				hasSystemJob = true
+				break
+			}
+		}
+		// Count operations that are not in system queue and not successfully sent
+		if !hasSystemJob && op.Status != StatusSent {
+			count++
+		}
+	}
+	return count
 }
 
 func (m model) getSelectionSymbol(file FileItem) string {
