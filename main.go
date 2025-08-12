@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 var (
 	// Base styles
@@ -101,6 +101,7 @@ type ActivePane int
 const (
 	PaneQueue ActivePane = iota
 	PaneFiles
+	PanePrint
 )
 
 type QueueSection int
@@ -167,6 +168,11 @@ type model struct {
 	matchedFiles    map[string]bool // Files matching pattern (visual only)
 	dirCursorMemory map[string]int  // Remember cursor position for each directory
 
+	// Print operations state
+	printOps     []PrintOperation
+	printCursor  int
+	refreshing   bool  // Prevent overlapping refresh operations
+
 	// Help bar component
 	helpBar *HelpBar
 
@@ -194,6 +200,7 @@ func initialModel(args []string) model {
 		stagedFiles:     []StagedFile{},
 		textInput:       ti,
 		currentDir:      currentDir,
+		printOps:        []PrintOperation{},
 		helpBar:         NewHelpBar(80), // Initial width, will be updated
 		args:            args,
 	}
@@ -209,7 +216,7 @@ func initialModel(args []string) model {
 	// Always load directory for split view
 	m.loadDirectory()
 
-	m.refreshJobs()
+	// Don't refresh jobs synchronously anymore
 	return m
 }
 
@@ -318,6 +325,7 @@ func (m model) Init() tea.Cmd {
 		tea.EnterAltScreen,
 		textinput.Blink,
 		tickCmd(),
+		refreshJobsCmd(),  // Initial job refresh
 	)
 }
 
@@ -364,21 +372,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			// Move to next pane
 			if m.layoutMode != LayoutSingle {
-				if m.activePane == PaneQueue {
+				switch m.activePane {
+				case PaneQueue:
 					m.activePane = PaneFiles
-				} else {
+				case PaneFiles:
+					if len(m.printOps) > 0 {
+						m.activePane = PanePrint
+					} else {
+						m.activePane = PaneQueue
+					}
+				case PanePrint:
 					m.activePane = PaneQueue
 				}
 			}
 			return m, nil
 
 		case "shift+tab":
-			// Move to previous pane (same as tab in 2-pane layout)
+			// Move to previous pane
 			if m.layoutMode != LayoutSingle {
-				if m.activePane == PaneQueue {
-					m.activePane = PaneFiles
-				} else {
+				switch m.activePane {
+				case PaneQueue:
+					if len(m.printOps) > 0 {
+						m.activePane = PanePrint
+					} else {
+						m.activePane = PaneFiles
+					}
+				case PaneFiles:
 					m.activePane = PaneQueue
+				case PanePrint:
+					m.activePane = PaneFiles
 				}
 			}
 			return m, nil
@@ -386,16 +408,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "P":
 			// Send all staged files to printer from any context
 			if len(m.stagedFiles) > 0 {
+				// Don't check printer availability synchronously - just try to print
+				// Store start index before adding new operations
+				startIndex := len(m.printOps)
+
+				// Create print operations and commands for each staged file
+				var printCmds []tea.Cmd
 				for _, file := range m.stagedFiles {
-					addToPrintQueue(file.Path)
+					opID := fmt.Sprintf("%s-%d", file.Path, time.Now().UnixNano())
+					op := PrintOperation{
+						ID:        opID,
+						FilePath:  file.Path,
+						FileName:  file.Name,
+						Status:    StatusSending,  // Start as sending
+						StartedAt: time.Now(),
+						UpdatedAt: time.Now(),
+					}
+					m.printOps = append(m.printOps, op)
+
+					// Just submit the print job directly - no delays, no sequence
+					printCmds = append(printCmds, submitPrintJobCmd(opID, file.Path))
+
 					delete(m.markedFiles, file.Path)
 				}
+				
+				// Clear staged files
 				m.stagedFiles = []StagedFile{}
 				m.stagedCursor = 0
-				if m.activePane == PaneQueue {
-					m.queueSection = SectionActive
-				}
-				m.refreshJobs()
+
+				// Switch to print pane to show progress
+				m.activePane = PanePrint
+				// Position cursor at the first newly added operation
+				m.printCursor = startIndex
+				
+				// Return all print commands as a batch
+				return m, tea.Batch(printCmds...)
 			}
 			return m, nil
 
@@ -410,10 +457,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Route to appropriate handler based on active pane
-		if m.activePane == PaneQueue {
+		switch m.activePane {
+		case PaneQueue:
 			return m.updateQueuePane(msg)
-		} else {
+		case PaneFiles:
 			return m.updateFilesPane(msg)
+		case PanePrint:
+			return m.updatePrintPane(msg)
+		default:
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -434,9 +486,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		// Always refresh jobs for split view
-		m.refreshJobs()
+		// Only refresh if not already refreshing
+		if !m.refreshing {
+			m.refreshing = true
+			return m, tea.Batch(
+				tickCmd(),          // Continue ticking
+				refreshJobsCmd(),   // Refresh jobs in background
+			)
+		}
+		// Just continue ticking if already refreshing
 		return m, tickCmd()
+
+	case jobsRefreshedMsg:
+		// Update jobs from async refresh
+		m.jobs = msg.jobs
+		m.refreshing = false  // Mark refresh as complete
+		return m, nil
+
+	case PrintStatusMsg:
+		// Update print operation status
+		for i := range m.printOps {
+			if m.printOps[i].ID == msg.FileID {
+				m.printOps[i].Status = msg.Status
+				m.printOps[i].Error = msg.Error
+				m.printOps[i].UpdatedAt = time.Now()
+				break
+			}
+		}
+		return m, nil
 	}
 
 	return m, tea.Batch(cmds...)
@@ -567,10 +644,17 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		}
 
+	case "p":
+		// Switch to print pane if there are print operations
+		if len(m.printOps) > 0 {
+			m.activePane = PanePrint
+		}
+
 	case "x":
 		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
 			cancelPrintJob(m.jobs[m.activeCursor].ID)
-			m.refreshJobs()
+			// Return command to refresh jobs async
+			return m, refreshJobsCmd()
 		} else if m.queueSection == SectionStaged {
 			// Get relative files for current directory
 			relativeStagedFiles := m.getRelativeStagedFiles()
@@ -613,7 +697,8 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
-		m.refreshJobs()
+		// Refresh jobs asynchronously
+		return m, refreshJobsCmd()
 
 	case " ":
 		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
@@ -917,6 +1002,13 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "p":
+		// Switch to print pane if there are print operations
+		if len(m.printOps) > 0 {
+			m.activePane = PanePrint
+		}
+		return m, nil
+
 	case " ":
 		if m.fileFocus == FocusFileList && m.fileCursor < len(m.files) {
 			file := m.files[m.fileCursor]
@@ -1062,10 +1154,14 @@ func (m model) View() string {
 }
 
 func (m model) viewSinglePane() string {
-	if m.activePane == PaneFiles {
+	switch m.activePane {
+	case PaneFiles:
 		return m.viewFilesPane()
+	case PanePrint:
+		return m.viewPrintPane()
+	default:
+		return m.viewQueuePane()
 	}
-	return m.viewQueuePane()
 }
 
 func (m model) viewSplitHorizontal() string {
@@ -1347,6 +1443,33 @@ func (m model) viewFilesPane() string {
 		title,
 		"",
 		filesContent,
+		"",
+		help,
+	)
+}
+
+func (m model) viewPrintPane() string {
+	contentWidth := m.width - 4   // Border margins
+
+	// Title
+	title := titleStyle.Copy().
+		Width(contentWidth).
+		Align(lipgloss.Center).
+		Render("🖨  Print Operations")
+
+	// Print content
+	contentHeight := m.height - 8
+	printContent := m.renderPrintContent(contentWidth, contentHeight)
+
+	// Help
+	help := m.renderHelpBar()
+
+	// Combine all parts
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		title,
+		"",
+		printContent,
 		"",
 		help,
 	)

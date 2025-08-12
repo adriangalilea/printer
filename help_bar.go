@@ -54,6 +54,14 @@ var (
 		{Key: "pgup/pgdn", Action: "page"},
 	}
 
+	printShortcuts = []HelpItem{
+		{Key: "↑↓", Action: "navigate"},
+		{Key: "r", Action: "retry failed"},
+		{Key: "x", Action: "cancel/remove"},
+		{Key: "X", Action: "clear completed"},
+		{Key: "o", Action: "open file"},
+	}
+
 	splitViewShortcuts = []HelpItem{
 		{Key: "tab", Action: "switch pane"},
 	}
@@ -143,14 +151,17 @@ func (h *HelpBar) buildItems() {
 		h.items = append(h.items, splitViewShortcuts...)
 	}
 
-	if h.context.ActivePane == PaneQueue {
+	switch h.context.ActivePane {
+	case PaneQueue:
 		h.items = append(h.items, queueShortcuts...)
-	} else if h.context.ActivePane == PaneFiles {
+	case PaneFiles:
 		if h.context.FileFocus == FocusInput {
 			h.items = append(h.items, filesInputShortcuts...)
 		} else {
 			h.items = append(h.items, filesListShortcuts...)
 		}
+	case PanePrint:
+		h.items = append(h.items, printShortcuts...)
 	}
 }
 
@@ -280,6 +291,16 @@ func (h *HelpBar) RenderFullHelp() string {
 	content.WriteString(helpSectionStyle.Render("Files Pane - List Mode"))
 	content.WriteString("\n")
 	for _, item := range filesListShortcuts {
+		content.WriteString("  ")
+		content.WriteString(renderHelpItem(item))
+		content.WriteString("\n")
+	}
+
+	// Print pane shortcuts
+	content.WriteString("\n")
+	content.WriteString(helpSectionStyle.Render("Print Pane"))
+	content.WriteString("\n")
+	for _, item := range printShortcuts {
 		content.WriteString("  ")
 		content.WriteString(renderHelpItem(item))
 		content.WriteString("\n")

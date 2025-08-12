@@ -16,11 +16,25 @@ import (
 // tickMsg is sent periodically to refresh the print queue
 type tickMsg time.Time
 
+// jobsRefreshedMsg contains the refreshed list of print jobs
+type jobsRefreshedMsg struct {
+	jobs []PrintJob
+}
+
 // tickCmd returns a command that sends a tickMsg every second
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// refreshJobsCmd runs lpstat asynchronously and returns the jobs
+func refreshJobsCmd() tea.Cmd {
+	return func() tea.Msg {
+		// This runs in a background goroutine, not blocking the UI
+		jobs := getSystemPrintJobs()
+		return jobsRefreshedMsg{jobs: jobs}
+	}
 }
 
 // getSystemPrintJobs retrieves the current print queue from the system
@@ -56,8 +70,11 @@ func getSystemPrintJobs() []PrintJob {
 		// Get file size (third field)
 		size, _ := strconv.ParseInt(parts[2], 10, 64)
 
-		// Try to get the original filename from the job
-		fileName := getJobFileName(parts[0])
+		// Only use tracker, don't call getJobFileName which does another lpstat
+		fileName := ""
+		if info, ok := tracker.GetJob(parts[0]); ok {
+			fileName = info.FileName
+		}
 		if fileName == "" {
 			fileName = fmt.Sprintf("Job %s", jobID)
 		}
