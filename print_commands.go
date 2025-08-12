@@ -32,27 +32,51 @@ type PrintStatusMsg struct {
 // submitPrintJobCmd creates a command that sends a file to the printer
 func submitPrintJobCmd(opID string, filePath string) tea.Cmd {
 	return func() tea.Msg {
-		// Do the actual printing in a goroutine
-		go func() {
-			// Check if file exists
-			if _, err := os.Stat(filePath); os.IsNotExist(err) {
-				// Can't send error back from goroutine
-				return
+		// Add a small random delay to stagger concurrent submissions
+		// This helps prevent overwhelming the print spooler
+		delay := time.Duration(100 + (time.Now().UnixNano()%200)) * time.Millisecond
+		time.Sleep(delay)
+		
+		// Check if file exists
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			return PrintStatusMsg{
+				FileID: opID,
+				Status: StatusFailed,
+				Error:  fmt.Errorf("file does not exist: %s", filePath),
 			}
+		}
 
-			// Execute lpr command
-			cmd := exec.Command("lpr", filePath)
-			cmd.Run()
-			
-			// Try to track the job ID after a brief delay
-			time.Sleep(200 * time.Millisecond)
-			if jobID := tryGetLatestJobID(); jobID != "" {
-				tracker.AddJob(jobID, filePath)
+		// Execute lpr command with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "lpr", filePath)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		err := cmd.Run()
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return PrintStatusMsg{
+					FileID: opID,
+					Status: StatusFailed,
+					Error:  fmt.Errorf("print command timed out after 10 seconds"),
+				}
 			}
-		}()
+			return PrintStatusMsg{
+				FileID: opID,
+				Status: StatusFailed,
+				Error:  fmt.Errorf("failed to print: %v - %s", err, stderr.String()),
+			}
+		}
+		
+		// Successfully sent to printer
+		// Try to track the job ID after a brief delay
+		time.Sleep(200 * time.Millisecond)
+		if jobID := tryGetLatestJobID(); jobID != "" {
+			tracker.AddJob(jobID, filePath)
+		}
 
-		// Return immediately saying it was sent
-		// The actual printing happens in the background
 		return PrintStatusMsg{
 			FileID: opID,
 			Status: StatusSent,

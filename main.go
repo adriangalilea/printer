@@ -101,7 +101,6 @@ type ActivePane int
 const (
 	PaneQueue ActivePane = iota
 	PaneFiles
-	PanePrint
 )
 
 type QueueSection int
@@ -170,8 +169,6 @@ type model struct {
 
 	// Print operations state
 	printOps     []PrintOperation
-	printCursor  int
-	refreshing   bool  // Prevent overlapping refresh operations
 
 	// Help bar component
 	helpBar *HelpBar
@@ -376,12 +373,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case PaneQueue:
 					m.activePane = PaneFiles
 				case PaneFiles:
-					if len(m.printOps) > 0 {
-						m.activePane = PanePrint
-					} else {
-						m.activePane = PaneQueue
-					}
-				case PanePrint:
 					m.activePane = PaneQueue
 				}
 			}
@@ -392,15 +383,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.layoutMode != LayoutSingle {
 				switch m.activePane {
 				case PaneQueue:
-					if len(m.printOps) > 0 {
-						m.activePane = PanePrint
-					} else {
-						m.activePane = PaneFiles
-					}
+					m.activePane = PaneFiles
 				case PaneFiles:
 					m.activePane = PaneQueue
-				case PanePrint:
-					m.activePane = PaneFiles
 				}
 			}
 			return m, nil
@@ -408,7 +393,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "P":
 			// Send all staged files to printer from any context
 			if len(m.stagedFiles) > 0 {
-				// Don't check printer availability synchronously - just try to print
 				// Store start index before adding new operations
 				startIndex := len(m.printOps)
 
@@ -420,13 +404,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						ID:        opID,
 						FilePath:  file.Path,
 						FileName:  file.Name,
-						Status:    StatusSending,  // Start as sending
+						Status:    StatusSending,  // Start as sending since we submit immediately
 						StartedAt: time.Now(),
 						UpdatedAt: time.Now(),
 					}
 					m.printOps = append(m.printOps, op)
 
-					// Just submit the print job directly - no delays, no sequence
+					// Submit the print job - it runs async in its own goroutine
 					printCmds = append(printCmds, submitPrintJobCmd(opID, file.Path))
 
 					delete(m.markedFiles, file.Path)
@@ -436,12 +420,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stagedFiles = []StagedFile{}
 				m.stagedCursor = 0
 
-				// Switch to print pane to show progress
-				m.activePane = PanePrint
+				// Switch to queue pane to show progress
+				m.activePane = PaneQueue
+				m.queueSection = SectionActive  // Focus on the active jobs section
 				// Position cursor at the first newly added operation
-				m.printCursor = startIndex
+				m.activeCursor = len(m.jobs) + startIndex  // Position after system jobs
 				
-				// Return all print commands as a batch
+				// Use Batch to run all commands concurrently
 				return m, tea.Batch(printCmds...)
 			}
 			return m, nil
@@ -462,8 +447,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateQueuePane(msg)
 		case PaneFiles:
 			return m.updateFilesPane(msg)
-		case PanePrint:
-			return m.updatePrintPane(msg)
 		default:
 			return m, nil
 		}
@@ -486,21 +469,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		// Only refresh if not already refreshing
-		if !m.refreshing {
-			m.refreshing = true
-			return m, tea.Batch(
-				tickCmd(),          // Continue ticking
-				refreshJobsCmd(),   // Refresh jobs in background
-			)
-		}
-		// Just continue ticking if already refreshing
-		return m, tickCmd()
+		// Always continue ticking and refresh
+		// The timeout in getSystemPrintJobs prevents hanging
+		return m, tea.Batch(
+			tickCmd(),          // Continue ticking
+			refreshJobsCmd(),   // Refresh jobs in background
+		)
 
 	case jobsRefreshedMsg:
 		// Update jobs from async refresh
 		m.jobs = msg.jobs
-		m.refreshing = false  // Mark refresh as complete
 		return m, nil
 
 	case PrintStatusMsg:
@@ -645,16 +623,36 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "p":
-		// Switch to print pane if there are print operations
-		if len(m.printOps) > 0 {
-			m.activePane = PanePrint
-		}
+		// Focus on queue pane to see print operations
+		m.activePane = PaneQueue
+		m.queueSection = SectionActive
 
 	case "x":
-		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
-			cancelPrintJob(m.jobs[m.activeCursor].ID)
-			// Return command to refresh jobs async
-			return m, refreshJobsCmd()
+		if m.queueSection == SectionActive {
+			totalJobs := len(m.jobs) + len(m.printOps)
+			if m.activeCursor < totalJobs {
+				if m.activeCursor < len(m.jobs) {
+					// Cancel system job
+					cancelPrintJob(m.jobs[m.activeCursor].ID)
+					// Return command to refresh jobs async
+					return m, refreshJobsCmd()
+				} else {
+					// Handle print operation
+					opIndex := m.activeCursor - len(m.jobs)
+					op := &m.printOps[opIndex]
+					if op.Status == StatusSending || op.Status == StatusPending {
+						// Cancel active operation
+						op.Status = StatusCanceled
+						op.UpdatedAt = time.Now()
+					} else if op.Status == StatusFailed || op.Status == StatusCanceled || op.Status == StatusSent {
+						// Remove completed/failed/canceled operation
+						m.printOps = append(m.printOps[:opIndex], m.printOps[opIndex+1:]...)
+						if m.activeCursor >= len(m.jobs)+len(m.printOps) && m.activeCursor > 0 {
+							m.activeCursor--
+						}
+					}
+				}
+			}
 		} else if m.queueSection == SectionStaged {
 			// Get relative files for current directory
 			relativeStagedFiles := m.getRelativeStagedFiles()
@@ -680,8 +678,16 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "o":
-		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
-			openFile(m.jobs[m.activeCursor].FilePath)
+		if m.queueSection == SectionActive {
+			totalJobs := len(m.jobs) + len(m.printOps)
+			if m.activeCursor < totalJobs {
+				if m.activeCursor < len(m.jobs) {
+					openFile(m.jobs[m.activeCursor].FilePath)
+				} else {
+					opIndex := m.activeCursor - len(m.jobs)
+					openFile(m.printOps[opIndex].FilePath)
+				}
+			}
 		} else if m.queueSection == SectionStaged {
 			relativeStagedFiles := m.getRelativeStagedFiles()
 			if m.stagedCursor < len(relativeStagedFiles) {
@@ -690,8 +696,16 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "O":
-		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
-			openFolder(m.jobs[m.activeCursor].FilePath)
+		if m.queueSection == SectionActive {
+			totalJobs := len(m.jobs) + len(m.printOps)
+			if m.activeCursor < totalJobs {
+				if m.activeCursor < len(m.jobs) {
+					openFolder(m.jobs[m.activeCursor].FilePath)
+				} else {
+					opIndex := m.activeCursor - len(m.jobs)
+					openFolder(m.printOps[opIndex].FilePath)
+				}
+			}
 		} else if m.queueSection == SectionStaged && m.stagedCursor < len(m.stagedFiles) {
 			openFolder(m.stagedFiles[m.stagedCursor].Path)
 		}
@@ -1003,10 +1017,9 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "p":
-		// Switch to print pane if there are print operations
-		if len(m.printOps) > 0 {
-			m.activePane = PanePrint
-		}
+		// Focus on queue pane to see print operations
+		m.activePane = PaneQueue
+		m.queueSection = SectionActive
 		return m, nil
 
 	case " ":
@@ -1157,8 +1170,6 @@ func (m model) viewSinglePane() string {
 	switch m.activePane {
 	case PaneFiles:
 		return m.viewFilesPane()
-	case PanePrint:
-		return m.viewPrintPane()
 	default:
 		return m.viewQueuePane()
 	}
@@ -1173,18 +1184,18 @@ func (m model) viewSplitHorizontal() string {
 	rightWidth := m.width - leftWidth
 	paneHeight := m.height - helpHeight - pathHeight
 
-	// Queue pane
+	// Queue pane (left side)
 	queueBorder := inactiveBorderStyle
 	if m.activePane == PaneQueue {
 		queueBorder = activeBorderStyle
 	}
-	queueContent := m.renderQueueContent(leftWidth-6, paneHeight-4) // Account for border + padding
+	queueContent := m.renderQueueContent(leftWidth-6, paneHeight-4)
 	queuePane := queueBorder.Copy().
 		Width(leftWidth - 2).
 		Height(paneHeight - 2).
 		Render(queueContent)
 
-	// Files pane
+	// Files pane (right side)
 	filesBorder := inactiveBorderStyle
 	if m.activePane == PaneFiles {
 		filesBorder = activeBorderStyle
@@ -1216,12 +1227,12 @@ func (m model) viewSplitVertical() string {
 	topHeight := availableHeight / 2
 	bottomHeight := availableHeight - topHeight
 
-	// Queue pane
+	// Queue pane (top)
 	queueBorder := inactiveBorderStyle
 	if m.activePane == PaneQueue {
 		queueBorder = activeBorderStyle
 	}
-	queueContent := m.renderQueueContent(m.width-6, topHeight-4) // Account for border + padding
+	queueContent := m.renderQueueContent(m.width-6, topHeight-4)
 	queuePane := queueBorder.Copy().
 		Width(m.width - 2).
 		Height(topHeight - 2).
@@ -1297,44 +1308,47 @@ func (m model) formatStagedFileName(file StagedFile) string {
 }
 
 func (m model) getDirectoryStatus(dirPath string) (totalPrintable int, stagedCount int, printingCount int) {
-	// Read directory to count printable files
-	entries, err := ioutil.ReadDir(dirPath)
-	if err != nil {
-		return 0, 0, 0
-	}
+	// Don't do file I/O! Use the existing state from the model
+	// Count files based on path prefix matching
 	
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			// Check if printable
-			ext := strings.ToLower(filepath.Ext(entry.Name()))
-			printableExts := []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
-			isPrintable := false
-			for _, pExt := range printableExts {
-				if ext == pExt {
-					isPrintable = true
-					break
-				}
-			}
-			
-			if isPrintable {
+	dirPrefix := dirPath + string(filepath.Separator)
+	
+	// First pass: count all printable files we know about from staged and jobs
+	// We'll assume if a file is staged or printing, it's printable
+	processedFiles := make(map[string]bool)
+	
+	// Count staged files in this directory
+	for path := range m.markedFiles {
+		// Check if file is direct child of dirPath (not in subdirectories)
+		if strings.HasPrefix(path, dirPrefix) {
+			relPath := strings.TrimPrefix(path, dirPrefix)
+			if !strings.Contains(relPath, string(filepath.Separator)) {
+				// It's a direct child
+				processedFiles[path] = true
 				totalPrintable++
-				fullPath := filepath.Join(dirPath, entry.Name())
-				
-				// Check if staged
-				if m.markedFiles[fullPath] {
-					stagedCount++
-				}
-				
-				// Check if in print queue
-				for _, job := range m.jobs {
-					if job.FilePath == fullPath {
-						printingCount++
-						break
-					}
-				}
+				stagedCount++
 			}
 		}
 	}
+	
+	// Count printing files in this directory
+	for _, job := range m.jobs {
+		if strings.HasPrefix(job.FilePath, dirPrefix) {
+			relPath := strings.TrimPrefix(job.FilePath, dirPrefix)
+			if !strings.Contains(relPath, string(filepath.Separator)) {
+				// It's a direct child
+				if !processedFiles[job.FilePath] {
+					totalPrintable++
+					processedFiles[job.FilePath] = true
+				}
+				printingCount++
+			}
+		}
+	}
+	
+	// For a more accurate count, we'd need to check m.files if this is the current directory
+	// or maintain a cache of directory contents. But for status indicators, the above is sufficient.
+	// If no files are staged or printing, we show the directory as having no status.
 	
 	return totalPrintable, stagedCount, printingCount
 }
@@ -1349,20 +1363,19 @@ func max(a, b int) int {
 
 func (m model) getSelectionSymbol(file FileItem) string {
 	if file.IsDir {
-		total, staged, printing := m.getDirectoryStatus(file.Path)
-		if total == 0 {
-			return "  " // No printable files
+		_, staged, printing := m.getDirectoryStatus(file.Path)
+		// Simplified logic - we only show status if files are actually staged or printing
+		// We don't scan directories just to count printable files
+		if printing > 0 && staged > 0 {
+			return "◑ " // Some printing, some staged
 		}
-		if printing == total {
-			return "● " // All printing
-		}
-		if staged == total {
-			return "◉ " // All staged
+		if printing > 0 {
+			return "● " // Has printing files
 		}
 		if staged > 0 {
-			return "◑ " // Partially staged
+			return "◉ " // Has staged files
 		}
-		return "○ " // Has printable files, none staged
+		return "  " // No special status
 	}
 	
 	if !file.IsPrintable {
@@ -1448,32 +1461,6 @@ func (m model) viewFilesPane() string {
 	)
 }
 
-func (m model) viewPrintPane() string {
-	contentWidth := m.width - 4   // Border margins
-
-	// Title
-	title := titleStyle.Copy().
-		Width(contentWidth).
-		Align(lipgloss.Center).
-		Render("🖨  Print Operations")
-
-	// Print content
-	contentHeight := m.height - 8
-	printContent := m.renderPrintContent(contentWidth, contentHeight)
-
-	// Help
-	help := m.renderHelpBar()
-
-	// Combine all parts
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		"",
-		printContent,
-		"",
-		help,
-	)
-}
 
 
 

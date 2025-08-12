@@ -160,8 +160,6 @@ func (h *HelpBar) buildItems() {
 		} else {
 			h.items = append(h.items, filesListShortcuts...)
 		}
-	case PanePrint:
-		h.items = append(h.items, printShortcuts...)
 	}
 }
 

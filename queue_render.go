@@ -13,9 +13,10 @@ func (m *model) renderQueueContent(width, height int) string {
 	var result strings.Builder
 	
 	// Active print jobs header (not scrollable)
+	totalJobs := len(m.jobs) + len(m.printOps)
 	activeHeader := "🖨  PRINTING"
-	if len(m.jobs) > 0 {
-		activeHeader = fmt.Sprintf("🖨  PRINTING (%d)", len(m.jobs))
+	if totalJobs > 0 {
+		activeHeader = fmt.Sprintf("🖨  PRINTING (%d)", totalJobs)
 	}
 	result.WriteString(activeHeaderStyle.Render(activeHeader))
 	result.WriteString("\n")
@@ -34,7 +35,7 @@ func (m *model) renderQueueContent(width, height int) string {
 	// Dynamic height allocation based on content
 	var activeScrollHeight, stagedScrollHeight int
 	
-	if len(m.jobs) == 0 {
+	if totalJobs == 0 {
 		// No active jobs - give minimal space to active, rest to staged
 		activeScrollHeight = 1  // Just 1 line for "No active jobs"
 		stagedScrollHeight = availableHeight - activeScrollHeight
@@ -44,10 +45,10 @@ func (m *model) renderQueueContent(width, height int) string {
 		}
 	} else {
 		// Have active jobs - split space reasonably
-		activeJobLines := len(m.jobs)
+		activeJobLines := totalJobs  // Use total jobs count (system + print ops)
 		
-		// Give active jobs what they need, up to 30% of available space
-		maxActiveHeight := (availableHeight * 3) / 10
+		// Give active jobs what they need, up to 50% of available space (increased from 30%)
+		maxActiveHeight := availableHeight / 2
 		if maxActiveHeight < 3 {
 			maxActiveHeight = 3  // Minimum useful height for active jobs
 		}
@@ -71,13 +72,18 @@ func (m *model) renderQueueContent(width, height int) string {
 	}
 	
 	// Build active jobs content for scrollable area
+	// Combine system jobs and our print operations
+	
 	var activeContent strings.Builder
-	if len(m.jobs) == 0 {
+	if totalJobs == 0 {
 		activeContent.WriteString(dimStyle.Render("  No active jobs"))
 	} else {
-		for i, job := range m.jobs {
+		itemIndex := 0
+		
+		// First, show system print jobs
+		for _, job := range m.jobs {
 			cursor := "  "
-			if i == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
+			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
 				cursor = "▶ "
 			}
 			
@@ -89,15 +95,73 @@ func (m *model) renderQueueContent(width, height int) string {
 			
 			line := fmt.Sprintf("%s%s%s", cursor, statusSymbol, fileName)
 			
-			if i == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
+			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
 				activeContent.WriteString(selectedStyle.Render(line))
 			} else {
 				activeContent.WriteString(normalStyle.Render(line))
 			}
 			
-			if i < len(m.jobs)-1 {
+			if itemIndex < totalJobs-1 {
 				activeContent.WriteString("\n")
 			}
+			itemIndex++
+		}
+		
+		// Then, show our tracked print operations
+		for _, op := range m.printOps {
+			cursor := "  "
+			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
+				cursor = "▶ "
+			}
+			
+			// Status symbol based on operation status
+			var statusSymbol string
+			var statusStyle = normalStyle
+			switch op.Status {
+			case StatusPending:
+				statusSymbol = "⏳"
+				statusStyle = dimStyle
+			case StatusSending:
+				statusSymbol = "📤"
+				statusStyle = selectedStyle
+			case StatusSent:
+				statusSymbol = "✓ "
+				statusStyle = printableStyle
+			case StatusFailed:
+				statusSymbol = "✗ "
+				statusStyle = errorStyle
+			case StatusCanceled:
+				statusSymbol = "⊘ "
+				statusStyle = dimStyle
+			}
+			
+			// Format filename with relative path (reuse the logic from print_render.go)
+			fileName := op.FileName
+			if len(fileName) > width-15 && width > 15 {
+				fileName = fileName[:width-18] + "..."
+			}
+			
+			line := fmt.Sprintf("%s%s %s", cursor, statusSymbol, fileName)
+			
+			// Add error message for failed operations
+			if op.Status == StatusFailed && op.Error != nil {
+				errorText := fmt.Sprintf(" - %s", op.Error.Error())
+				if len(line+errorText) > width-2 && width > 2 {
+					errorText = errorText[:width-len(line)-5] + "..."
+				}
+				line += errorText
+			}
+			
+			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
+				activeContent.WriteString(selectedStyle.Render(line))
+			} else {
+				activeContent.WriteString(statusStyle.Render(line))
+			}
+			
+			if itemIndex < totalJobs-1 {
+				activeContent.WriteString("\n")
+			}
+			itemIndex++
 		}
 	}
 	
@@ -106,7 +170,7 @@ func (m *model) renderQueueContent(width, height int) string {
 	activeScroll.SetContent(activeContent.String())
 	
 	// Ensure active cursor is visible
-	if m.queueSection == SectionActive && len(m.jobs) > 0 {
+	if m.queueSection == SectionActive && totalJobs > 0 {
 		activeScroll.ScrollToLine(m.activeCursor)
 	}
 	

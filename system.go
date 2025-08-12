@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,9 +40,19 @@ func refreshJobsCmd() tea.Cmd {
 
 // getSystemPrintJobs retrieves the current print queue from the system
 func getSystemPrintJobs() []PrintJob {
-	cmd := exec.Command("lpstat", "-o")
+	// Add timeout to prevent hanging when print spooler is stuck
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, "lpstat", "-o")
 	output, err := cmd.Output()
 	if err != nil {
+		// Log the error but don't block - return empty list
+		// This allows the app to continue working even if lpstat fails
+		if ctx.Err() == context.DeadlineExceeded {
+			// Print spooler is not responding
+			// Could add an error message to the UI here
+		}
 		return []PrintJob{}
 	}
 
