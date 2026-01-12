@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.1.4"
+const version = "0.2.0"
 
 var (
 	// Base styles
@@ -128,7 +128,7 @@ type FileItem struct {
 type PrintJob struct {
 	ID       string
 	FileName string
-	FilePath string
+	FilePath string // Empty for system jobs, populated for our PrintOperations
 	Size     int64
 	Status   string
 }
@@ -479,30 +479,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jobsRefreshedMsg:
 		// Update jobs from async refresh
 		m.jobs = msg.jobs
-		
+
 		// Clean up print operations that are successfully sent and no longer in system queue
 		var cleanedOps []PrintOperation
 		for _, op := range m.printOps {
 			// Keep if:
-			// 1. Still in system queue (has matching job)
+			// 1. Still in system queue (match by CUPS job ID)
 			// 2. Failed or canceled (user needs to see these)
 			// 3. Still sending/pending
 			keepOp := false
-			
-			// Check if in system queue
-			for _, job := range m.jobs {
-				if job.FilePath == op.FilePath && job.FilePath != "" {
-					keepOp = true
-					break
+
+			// Check if in system queue by matching job ID
+			if op.SystemJobID != "" {
+				for _, job := range m.jobs {
+					if job.ID == op.SystemJobID {
+						keepOp = true
+						break
+					}
 				}
 			}
-			
+
 			// Keep failed, canceled, or still processing operations
-			if !keepOp && (op.Status == StatusFailed || op.Status == StatusCanceled || 
+			if !keepOp && (op.Status == StatusFailed || op.Status == StatusCanceled ||
 				op.Status == StatusPending || op.Status == StatusSending) {
 				keepOp = true
 			}
-			
+
 			if keepOp {
 				cleanedOps = append(cleanedOps, op)
 			}
@@ -518,12 +520,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case PrintStatusMsg:
-		// Update print operation status
+		// Update print operation status and store CUPS job ID
 		for i := range m.printOps {
 			if m.printOps[i].ID == msg.FileID {
 				m.printOps[i].Status = msg.Status
 				m.printOps[i].Error = msg.Error
 				m.printOps[i].UpdatedAt = time.Now()
+				if msg.SystemJobID != "" {
+					m.printOps[i].SystemJobID = msg.SystemJobID
+				}
 				break
 			}
 		}
@@ -668,21 +673,18 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "x":
 		if m.queueSection == SectionActive {
-			// FIXME: This entire section duplicates the deduplication logic AGAIN!
-			// Also, jobs without FilePath (system jobs we didn't track) can't be canceled
-			// because the matching logic depends on FilePath being set.
 			// Build the deduplicated list to find what's at the cursor
 			itemIndex := 0
 			handled := false
-			
+
 			// First check system jobs
 			for _, job := range m.jobs {
 				if itemIndex == m.activeCursor {
 					// Cancel system job
 					cancelPrintJob(job.ID)
-					// Also cancel our tracking if we have it
+					// Also cancel our tracking if we have it (match by job ID)
 					for j := range m.printOps {
-						if m.printOps[j].FilePath == job.FilePath {
+						if m.printOps[j].SystemJobID == job.ID {
 							m.printOps[j].Status = StatusCanceled
 							m.printOps[j].UpdatedAt = time.Now()
 							break
@@ -693,19 +695,21 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				itemIndex++
 			}
-			
+
 			// Then check unmatched print operations
 			if !handled {
 				for i, op := range m.printOps {
-					// Skip if this operation has a system job
+					// Skip if this operation has a system job (match by job ID)
 					hasSystemJob := false
-					for _, job := range m.jobs {
-						if job.FilePath == op.FilePath && job.FilePath != "" {
-							hasSystemJob = true
-							break
+					if op.SystemJobID != "" {
+						for _, job := range m.jobs {
+							if job.ID == op.SystemJobID {
+								hasSystemJob = true
+								break
+							}
 						}
 					}
-					
+
 					if !hasSystemJob && op.Status != StatusSent {
 						if itemIndex == m.activeCursor {
 							if op.Status == StatusSending || op.Status == StatusPending {
@@ -756,7 +760,10 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			totalJobs := len(m.jobs) + len(m.printOps)
 			if m.activeCursor < totalJobs {
 				if m.activeCursor < len(m.jobs) {
-					openFile(m.jobs[m.activeCursor].FilePath)
+					// For system jobs, find matching PrintOperation by job ID
+					job := m.jobs[m.activeCursor]
+					filePath := m.findFilePathByJobID(job.ID)
+					openFile(filePath)
 				} else {
 					opIndex := m.activeCursor - len(m.jobs)
 					openFile(m.printOps[opIndex].FilePath)
@@ -774,7 +781,10 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			totalJobs := len(m.jobs) + len(m.printOps)
 			if m.activeCursor < totalJobs {
 				if m.activeCursor < len(m.jobs) {
-					openFolder(m.jobs[m.activeCursor].FilePath)
+					// For system jobs, find matching PrintOperation by job ID
+					job := m.jobs[m.activeCursor]
+					filePath := m.findFilePathByJobID(job.ID)
+					openFolder(filePath)
 				} else {
 					opIndex := m.activeCursor - len(m.jobs)
 					openFolder(m.printOps[opIndex].FilePath)
@@ -1386,44 +1396,37 @@ func (m model) getDirectoryStatus(dirPath string) (totalPrintable int, stagedCou
 	// Count files based on path prefix matching
 	
 	dirPrefix := dirPath + string(filepath.Separator)
-	
-	// First pass: count all printable files we know about from staged and jobs
-	// We'll assume if a file is staged or printing, it's printable
+
 	processedFiles := make(map[string]bool)
-	
+
 	// Count staged files in this directory
 	for path := range m.markedFiles {
-		// Check if file is direct child of dirPath (not in subdirectories)
 		if strings.HasPrefix(path, dirPrefix) {
 			relPath := strings.TrimPrefix(path, dirPrefix)
 			if !strings.Contains(relPath, string(filepath.Separator)) {
-				// It's a direct child
 				processedFiles[path] = true
 				totalPrintable++
 				stagedCount++
 			}
 		}
 	}
-	
-	// Count printing files in this directory
-	for _, job := range m.jobs {
-		if strings.HasPrefix(job.FilePath, dirPrefix) {
-			relPath := strings.TrimPrefix(job.FilePath, dirPrefix)
+
+	// Count printing files using PrintOperations (they have FilePath, system jobs don't)
+	for _, op := range m.printOps {
+		if strings.HasPrefix(op.FilePath, dirPrefix) {
+			relPath := strings.TrimPrefix(op.FilePath, dirPrefix)
 			if !strings.Contains(relPath, string(filepath.Separator)) {
-				// It's a direct child
-				if !processedFiles[job.FilePath] {
+				if !processedFiles[op.FilePath] {
 					totalPrintable++
-					processedFiles[job.FilePath] = true
+					processedFiles[op.FilePath] = true
 				}
-				printingCount++
+				if op.Status == StatusSending || op.Status == StatusPending {
+					printingCount++
+				}
 			}
 		}
 	}
-	
-	// For a more accurate count, we'd need to check m.files if this is the current directory
-	// or maintain a cache of directory contents. But for status indicators, the above is sufficient.
-	// If no files are staged or printing, we show the directory as having no status.
-	
+
 	return totalPrintable, stagedCount, printingCount
 }
 
@@ -1435,18 +1438,28 @@ func max(a, b int) int {
 	return b
 }
 
-// FIXME: This duplicates the deduplication logic from queue_render.go
-// We need ONE source of truth for the deduplicated job list!
+// findFilePathByJobID finds the FilePath for a system job by matching job ID against PrintOperations
+func (m model) findFilePathByJobID(jobID string) string {
+	for _, op := range m.printOps {
+		if op.SystemJobID == jobID {
+			return op.FilePath
+		}
+	}
+	return ""
+}
+
 // getActualJobCount returns the deduplicated count of active jobs
 func (m model) getActualJobCount() int {
 	count := len(m.jobs)
-	// Add print operations that don't have corresponding system jobs
+	// Add print operations that don't have corresponding system jobs (match by job ID)
 	for _, op := range m.printOps {
 		hasSystemJob := false
-		for _, job := range m.jobs {
-			if job.FilePath == op.FilePath && job.FilePath != "" {
-				hasSystemJob = true
-				break
+		if op.SystemJobID != "" {
+			for _, job := range m.jobs {
+				if job.ID == op.SystemJobID {
+					hasSystemJob = true
+					break
+				}
 			}
 		}
 		// Count operations that are not in system queue and not successfully sent
@@ -1478,9 +1491,10 @@ func (m model) getSelectionSymbol(file FileItem) string {
 		return "  " // Not printable
 	}
 	
-	// Check if in print queue
+	// Check if in print queue (match by filename since we don't have FilePath from lpq)
+	fileName := filepath.Base(file.Path)
 	for _, job := range m.jobs {
-		if job.FilePath == file.Path {
+		if job.FileName == fileName {
 			return "● " // Printing
 		}
 	}

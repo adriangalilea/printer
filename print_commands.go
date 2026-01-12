@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,9 +26,38 @@ const (
 
 // PrintStatusMsg is sent when a print job status changes
 type PrintStatusMsg struct {
-	FileID  string
-	Status  PrintStatus
-	Error   error
+	FileID      string
+	Status      PrintStatus
+	SystemJobID string // CUPS job ID (e.g., "216") for matching with lpq
+	Error       error
+}
+
+// parseJobIDFromLpOutput extracts job number from lp output
+// Input: "request id is EPSON_ET_2810_Series-216 (1 file(s))"
+// Output: "216"
+func parseJobIDFromLpOutput(output string) string {
+	const prefix = "request id is "
+	idx := strings.Index(output, prefix)
+	if idx == -1 {
+		return ""
+	}
+
+	remaining := output[idx+len(prefix):]
+	// Find end of job ID (space or parenthesis)
+	end := strings.IndexAny(remaining, " (")
+	if end == -1 {
+		end = len(remaining)
+	}
+
+	fullID := remaining[:end] // e.g., "EPSON_ET_2810_Series-216"
+
+	// Extract just the number after the last hyphen
+	lastHyphen := strings.LastIndex(fullID, "-")
+	if lastHyphen != -1 && lastHyphen < len(fullID)-1 {
+		return fullID[lastHyphen+1:] // e.g., "216"
+	}
+
+	return fullID
 }
 
 // submitPrintJobCmd creates a command that sends a file to the printer
@@ -36,7 +67,7 @@ func submitPrintJobCmd(opID string, filePath string) tea.Cmd {
 		// This helps prevent overwhelming the print spooler
 		delay := time.Duration(100 + (time.Now().UnixNano()%200)) * time.Millisecond
 		time.Sleep(delay)
-		
+
 		// Check if file exists
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			return PrintStatusMsg{
@@ -46,12 +77,15 @@ func submitPrintJobCmd(opID string, filePath string) tea.Cmd {
 			}
 		}
 
-		// Execute lpr command with timeout
+		// Execute lp command with -t to set job title (filename)
+		// This makes the filename visible in lpq output
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "lpr", filePath)
-		var stderr bytes.Buffer
+		fileName := filepath.Base(filePath)
+		cmd := exec.CommandContext(ctx, "lp", "-t", fileName, filePath)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 
 		err := cmd.Run()
@@ -69,18 +103,15 @@ func submitPrintJobCmd(opID string, filePath string) tea.Cmd {
 				Error:  fmt.Errorf("failed to print: %v - %s", err, stderr.String()),
 			}
 		}
-		
-		// Successfully sent to printer
-		// Try to track the job ID after a brief delay
-		time.Sleep(200 * time.Millisecond)
-		if jobID := tryGetLatestJobID(); jobID != "" {
-			tracker.AddJob(jobID, filePath)
-		}
+
+		// Parse job ID from lp output: "request id is PRINTER-123 (1 file(s))"
+		jobID := parseJobIDFromLpOutput(stdout.String())
 
 		return PrintStatusMsg{
-			FileID: opID,
-			Status: StatusSent,
-			Error:  nil,
+			FileID:      opID,
+			Status:      StatusSent,
+			SystemJobID: jobID,
+			Error:       nil,
 		}
 	}
 }
@@ -123,11 +154,12 @@ func processPrintJob(opID string, filePath string) PrintStatusMsg {
 		}
 	}
 
-	// Execute lpr command with timeout
+	// Execute lp command with -t to set job title (filename)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "lpr", filePath)
+	fileName := filepath.Base(filePath)
+	cmd := exec.CommandContext(ctx, "lp", "-t", fileName, filePath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -147,12 +179,6 @@ func processPrintJob(opID string, filePath string) PrintStatusMsg {
 		}
 	}
 
-	// Successfully sent to printer
-	// Try to track the job ID
-	if jobID := tryGetLatestJobID(); jobID != "" {
-		tracker.AddJob(jobID, filePath)
-	}
-
 	return PrintStatusMsg{
 		FileID: opID,
 		Status: StatusSent,
@@ -160,28 +186,6 @@ func processPrintJob(opID string, filePath string) PrintStatusMsg {
 	}
 }
 
-// tryGetLatestJobID attempts to get the latest print job ID
-func tryGetLatestJobID() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "lpstat", "-o")
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-
-	// Parse the first job from output
-	lines := bytes.Split(output, []byte("\n"))
-	if len(lines) > 0 && len(lines[0]) > 0 {
-		parts := bytes.Fields(lines[0])
-		if len(parts) > 0 {
-			return string(parts[0])
-		}
-	}
-
-	return ""
-}
 
 // CheckPrinterAvailable checks if a printer is configured and available
 func CheckPrinterAvailable() (bool, error) {

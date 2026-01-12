@@ -39,63 +39,81 @@ func refreshJobsCmd() tea.Cmd {
 }
 
 // getSystemPrintJobs retrieves the current print queue from the system
+// Uses lpq which shows job titles (filenames) set via lp -t
 func getSystemPrintJobs() []PrintJob {
 	// Add timeout to prevent hanging when print spooler is stuck
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	
-	cmd := exec.CommandContext(ctx, "lpstat", "-o")
+
+	cmd := exec.CommandContext(ctx, "lpq", "-a")
 	output, err := cmd.Output()
 	if err != nil {
-		// Log the error but don't block - return empty list
-		// This allows the app to continue working even if lpstat fails
-		if ctx.Err() == context.DeadlineExceeded {
-			// Print spooler is not responding
-			// Could add an error message to the UI here
-		}
 		return []PrintJob{}
 	}
 
 	var jobs []PrintJob
 	lines := strings.Split(string(output), "\n")
-	
+
+	// lpq output format:
+	// Rank    Owner   Job     File(s)                         Total Size
+	// active  adrian  210     filename.pdf                    155648 bytes
+	// 1st     adrian  212     another.pdf                     1024 bytes
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
-		// Parse lpstat output format: "printer-jobid user size date time"
+		// Skip header line
+		if strings.HasPrefix(line, "Rank") {
+			continue
+		}
+
+		// Parse: rank owner job filename size "bytes"
 		parts := strings.Fields(line)
-		if len(parts) < 3 {
+		if len(parts) < 5 {
 			continue
 		}
 
-		// Extract job ID from the first field (format: printer-jobid)
-		jobParts := strings.Split(parts[0], "-")
-		if len(jobParts) < 2 {
+		rank := parts[0]
+		// Skip if not a job line (active, 1st, 2nd, etc.)
+		if rank != "active" && !strings.HasSuffix(rank, "st") &&
+		   !strings.HasSuffix(rank, "nd") && !strings.HasSuffix(rank, "rd") &&
+		   !strings.HasSuffix(rank, "th") {
 			continue
 		}
-		jobID := jobParts[len(jobParts)-1]
 
-		// Get file size (third field)
-		size, _ := strconv.ParseInt(parts[2], 10, 64)
+		jobNum := parts[2]
 
-		// Only use tracker, don't call getJobFileName which does another lpstat
-		fileName := ""
-		if info, ok := tracker.GetJob(parts[0]); ok {
-			fileName = info.FileName
+		// Filename is everything between job number and size
+		// Find the "bytes" suffix to locate size
+		bytesIdx := -1
+		for i := len(parts) - 1; i >= 0; i-- {
+			if parts[i] == "bytes" {
+				bytesIdx = i
+				break
+			}
 		}
+
+		if bytesIdx < 4 {
+			continue
+		}
+
+		// Size is the field before "bytes"
+		size, _ := strconv.ParseInt(parts[bytesIdx-1], 10, 64)
+
+		// Filename is fields 3 to (bytesIdx-2)
+		fileName := strings.Join(parts[3:bytesIdx-1], " ")
 		if fileName == "" {
-			fileName = fmt.Sprintf("Job %s", jobID)
+			fileName = fmt.Sprintf("Job %s", jobNum)
 		}
 
 		job := PrintJob{
-			ID:       parts[0],
+			ID:       jobNum,
 			FileName: fileName,
-			FilePath: getJobFilePath(parts[0]),
 			Size:     size,
-			Status:   "Queued",
+			Status:   rank,
 		}
 
 		jobs = append(jobs, job)
@@ -104,45 +122,6 @@ func getSystemPrintJobs() []PrintJob {
 	return jobs
 }
 
-// getJobFileName attempts to retrieve the original filename for a print job
-func getJobFileName(jobID string) string {
-	// First check our tracker
-	if info, ok := tracker.GetJob(jobID); ok {
-		return info.FileName
-	}
-	
-	// Fallback to trying to extract from lpstat
-	cmd := exec.Command("lpstat", "-W", "completed", "-o", jobID)
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-
-	// Parse output to find filename
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		// Look for filename patterns in the output
-		if strings.Contains(line, "/") {
-			parts := strings.Fields(line)
-			for _, part := range parts {
-				if strings.Contains(part, "/") {
-					return filepath.Base(part)
-				}
-			}
-		}
-	}
-
-	return ""
-}
-
-// getJobFilePath attempts to retrieve the original file path for a print job
-func getJobFilePath(jobID string) string {
-	// Check our tracker
-	if info, ok := tracker.GetJob(jobID); ok {
-		return info.FilePath
-	}
-	return ""
-}
 
 // cancelPrintJob cancels a specific print job
 func cancelPrintJob(jobID string) error {
@@ -165,25 +144,17 @@ func addToPrintQueue(filePath string) error {
 		return fmt.Errorf("file does not exist: %s", filePath)
 	}
 
-	// Send to printer using lpr and capture the job ID
-	cmd := exec.Command("lpr", filePath)
+	// Send to printer using lp with -t to set job title (filename)
+	fileName := filepath.Base(filePath)
+	cmd := exec.Command("lp", "-t", fileName, filePath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	
+
 	err := cmd.Run()
 	if err != nil {
 		return fmt.Errorf("failed to print %s: %v - %s", filePath, err, stderr.String())
 	}
-	
-	// Get the latest job ID (this is a bit hacky but works)
-	// We look for the newest job right after submission
-	time.Sleep(100 * time.Millisecond)
-	jobs := getSystemPrintJobs()
-	if len(jobs) > 0 {
-		// Track this job
-		tracker.AddJob(jobs[0].ID, filePath)
-	}
-	
+
 	return nil
 }
 

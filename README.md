@@ -23,7 +23,6 @@ A sophisticated TUI (Terminal User Interface) for managing print queues on macOS
 - **Focus indicators** with colored borders showing active pane
 - **Scroll support** for long file lists with position indicators
 - **Path display** showing current directory in file browser
-- **XDG-compliant** data storage respecting system standards
 
 ## Installation
 
@@ -87,12 +86,13 @@ The input field supports glob patterns:
 ### Core Components
 
 - **main.go** - TUI application logic with Bubble Tea framework
-- **system.go** - System integration for print queue operations
-- **tracker.go** - Persistent job tracking with XDG-compliant storage
+- **system.go** - System integration for print queue operations (`lp`, `lpq`, `cancel`)
+- **queue_render.go** - Print queue display with deduplication
+- **print_commands.go** - Async print job submission
 
-### Data Persistence
+### How It Works
 
-Print job metadata is stored in `$XDG_DATA_HOME/printer/jobs.json` (defaults to `~/.local/share/printer/`) to maintain file path associations and enable file/folder opening features.
+CUPS is the single source of truth. When submitting jobs via `lp -t "filename"`, the filename is embedded as the job title. The app queries `lpq` which returns job IDs and filenames directly from CUPS - no local state needed.
 
 ## Supported File Types
 
@@ -102,7 +102,7 @@ Automatically detected as printable:
 
 ## Requirements
 
-- macOS (uses `lpr`, `lpstat`, `cancel` commands)
+- macOS (uses `lp`, `lpq`, `cancel` commands)
 - Go 1.19+ for building
 - CUPS printing system (standard on macOS)
 
