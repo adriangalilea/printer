@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.2.3"
+const version = "0.2.4"
 
 // Printable file extensions (single source of truth)
 var printableExts = []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".html", ".htm", ".rtf"}
@@ -67,12 +67,26 @@ var (
 			Foreground(theme.Text)
 
 	stagedHeaderStyle = lipgloss.NewStyle().
-				Foreground(theme.Green).
+				Foreground(theme.Mauve).
 				Bold(true)
 
 	activeHeaderStyle = lipgloss.NewStyle().
-				Foreground(theme.Red).
+				Foreground(theme.Mauve).
 				Bold(true)
+
+	printerNameStyle = lipgloss.NewStyle().
+				Foreground(theme.Text).
+				Bold(true)
+
+	printerStatusIdleStyle = lipgloss.NewStyle().
+				Foreground(theme.Surface2)
+
+	printerStatusActiveStyle = lipgloss.NewStyle().
+				Foreground(theme.Peach).
+				Bold(true)
+
+	treeStyle = lipgloss.NewStyle().
+			Foreground(theme.Surface2)
 
 	errorStyle = lipgloss.NewStyle().
 			Foreground(theme.Red).
