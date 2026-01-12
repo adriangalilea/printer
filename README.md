@@ -97,7 +97,8 @@ CUPS is the single source of truth. When submitting jobs via `lp -t "filename"`,
 ## Supported File Types
 
 Automatically detected as printable:
-- Documents: `.pdf`, `.txt`, `.doc`, `.docx`
+- Documents: `.pdf`, `.txt`, `.doc`, `.docx`, `.rtf`
+- Web: `.html`, `.htm`
 - Images: `.jpg`, `.jpeg`, `.png`, `.gif`
 
 ## Requirements

@@ -15,7 +15,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
+
+// Printable file extensions (single source of truth)
+var printableExts = []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".html", ".htm", ".rtf"}
 
 var (
 	// Base styles
@@ -240,7 +243,6 @@ func (m *model) loadDirectory() {
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			ext := strings.ToLower(filepath.Ext(entry.Name()))
-			printableExts := []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
 			for _, pExt := range printableExts {
 				if ext == pExt {
 					printableCount++
@@ -269,7 +271,6 @@ func (m *model) loadDirectory() {
 		isPrintable := false
 		if !entry.IsDir() {
 			ext := strings.ToLower(filepath.Ext(name))
-			printableExts := []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
 			for _, pExt := range printableExts {
 				if ext == pExt {
 					isPrintable = true
@@ -1169,7 +1170,6 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						for _, entry := range entries {
 							if !entry.IsDir() {
 								ext := strings.ToLower(filepath.Ext(entry.Name()))
-								printableExts := []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
 								isPrintable := false
 								for _, pExt := range printableExts {
 									if ext == pExt {
