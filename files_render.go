@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func (m *model) renderFilesContent(width, height int) string {
@@ -15,16 +17,21 @@ func (m *model) renderFilesContent(width, height int) string {
 	// Header (not scrollable)
 	header := "📁 File Browser"
 	result.WriteString(header)
-	result.WriteString("\n\n")
-	
-	// Input field (not scrollable)
-	result.WriteString(m.textInput.View())
-	result.WriteString("\n\n")
+	result.WriteString("\n")
+
+	// Input field with visual box
+	inputLine := fmt.Sprintf("┌%s┐", strings.Repeat("─", width-4))
+	result.WriteString(dimStyle.Render(inputLine))
+	result.WriteString("\n")
+	result.WriteString(dimStyle.Render("│ ") + m.textInput.View())
+	result.WriteString("\n")
+	inputBottom := fmt.Sprintf("└%s┘", strings.Repeat("─", width-4))
+	result.WriteString(dimStyle.Render(inputBottom))
+	result.WriteString("\n")
 	
 	// Calculate remaining height for scrollable file list
-	// Account for: header (1 line), spacing after header (1 line), 
-	// input (1 line), spacing after input (1 line) = 4 lines total
-	scrollableHeight := height - 4
+	// Account for: header (1), input box (3 lines: top border, input, bottom border), spacing (1) = 5 lines
+	scrollableHeight := height - 5
 	if scrollableHeight <= 0 {
 		return result.String()
 	}
@@ -33,28 +40,20 @@ func (m *model) renderFilesContent(width, height int) string {
 	var fileListContent strings.Builder
 	
 	if len(m.files) == 0 {
-		fileListContent.WriteString(dimStyle.Render("No files"))
+		fileListContent.WriteString(dimStyle.Render("  No files"))
 	} else {
 		for i, file := range m.files {
-			// Cursor indicator
-			cursor := "  "
-			if i == m.fileCursor && m.activePane == PaneFiles && m.fileFocus == FocusFileList {
-				cursor = "▶ "
-			}
-			
-			// Get selection symbol based on file state
+			isCursor := i == m.fileCursor && m.activePane == PaneFiles && m.fileFocus == FocusFileList
 			selectionSymbol := m.getSelectionSymbol(file)
-			
-			// Format file name
+
 			displayName := file.Name
 			maxNameLen := width - 10
 			if maxNameLen > 0 && len(displayName) > maxNameLen {
 				displayName = displayName[:maxNameLen-3] + "..."
 			}
-			
+
 			// Special handling for toggle all item
 			if file.Path == "TOGGLE_ALL" {
-				// Check if all are selected to show appropriate symbol
 				allMarked := true
 				for _, f := range m.files {
 					if f.IsPrintable && !m.markedFiles[f.Path] {
@@ -66,20 +65,14 @@ func (m *model) renderFilesContent(width, height int) string {
 				if allMarked {
 					selectAllSymbol = "◉ "
 				}
-				line := fmt.Sprintf("%s%s %s", cursor, selectAllSymbol, displayName)
-				
-				if i == m.fileCursor && m.activePane == PaneFiles && m.fileFocus == FocusFileList {
-					fileListContent.WriteString(selectedFileStyle.Render(line))
-				} else {
-					fileListContent.WriteString(selectedStyle.Render(line))
-				}
-				
+				content := fmt.Sprintf("%s%s", selectAllSymbol, displayName)
+				fileListContent.WriteString(renderSelectable(isCursor, 2, content, selectedFileStyle, selectedStyle))
 				if i < len(m.files)-1 {
 					fileListContent.WriteString("\n")
 				}
 				continue
 			}
-			
+
 			// Add type indicator
 			typeIndicator := ""
 			if file.IsDir {
@@ -89,37 +82,31 @@ func (m *model) renderFilesContent(width, height int) string {
 			} else {
 				typeIndicator = "   "
 			}
-			
-			line := fmt.Sprintf("%s%s%s%s", cursor, selectionSymbol, typeIndicator, displayName)
 
-			// Apply styles based on state combinations
-			var styledLine string
-			isCursor := i == m.fileCursor && m.activePane == PaneFiles && m.fileFocus == FocusFileList
+			content := fmt.Sprintf("%s%s%s", selectionSymbol, typeIndicator, displayName)
 			isMarked := m.markedFiles[file.Path]
 			isMatched := m.matchedFiles[file.Path]
 
-			if isCursor {
-				// Cursor position - highest priority
-				if isMarked {
-					styledLine = selectedFileStyle.Copy().Background(theme.Yellow).Render(line)
-				} else if isMatched {
-					styledLine = selectedFileStyle.Copy().Background(theme.Surface1).Render(line)
-				} else {
-					styledLine = selectedFileStyle.Render(line)
-				}
-			} else if isMarked {
-				styledLine = markedStyle.Render(line)
+			// Determine styles based on state
+			var selStyle, normStyle lipgloss.Style
+			if isMarked {
+				selStyle = selectedFileStyle.Copy().Background(theme.Yellow)
+				normStyle = markedStyle
 			} else if isMatched {
-				styledLine = matchedStyle.Render(line)
+				selStyle = selectedFileStyle
+				normStyle = matchedStyle
 			} else if file.IsDir {
-				styledLine = dirStyle.Render(line)
+				selStyle = selectedFileStyle
+				normStyle = dirStyle
 			} else if file.IsPrintable {
-				styledLine = printableStyle.Render(line)
+				selStyle = selectedFileStyle
+				normStyle = printableStyle
 			} else {
-				styledLine = dimStyle.Render(line)
+				selStyle = selectedFileStyle
+				normStyle = dimStyle
 			}
-			
-			fileListContent.WriteString(styledLine)
+
+			fileListContent.WriteString(renderSelectable(isCursor, 2, content, selStyle, normStyle))
 			if i < len(m.files)-1 {
 				fileListContent.WriteString("\n")
 			}

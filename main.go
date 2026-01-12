@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.2.4"
+const version = "0.2.5"
 
 // Printable file extensions (single source of truth)
 var printableExts = []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".html", ".htm", ".rtf"}
@@ -103,6 +103,17 @@ var (
 				BorderForeground(theme.Surface2).
 				Padding(0, 1)
 )
+
+// renderSelectable renders content with cursor and highlight
+// cursorWidth: width of cursor area (e.g., 2 for file browser, 5 for queue)
+// When selected: cursor is 1 char shorter, highlight has 1 char padding to keep text aligned
+func renderSelectable(selected bool, cursorWidth int, content string, selectedStyle, normalStyle lipgloss.Style) string {
+	if selected {
+		prefix := strings.Repeat(" ", cursorWidth-2) + "▸"
+		return prefix + selectedStyle.Render(" "+content+" ")
+	}
+	return strings.Repeat(" ", cursorWidth) + normalStyle.Render(content)
+}
 
 type LayoutMode int
 

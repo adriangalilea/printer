@@ -107,10 +107,7 @@ func (m *model) renderQueueContent(width, height int) string {
 		itemIndex := 0
 
 		for _, job := range m.jobs {
-			cursor := "     "
-			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
-				cursor = "   ▶ "
-			}
+			isCursor := itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive
 
 			var statusSymbol string
 			var statusStyle = normalStyle
@@ -124,7 +121,7 @@ func (m *model) renderQueueContent(width, height int) string {
 					statusStyle = dimStyle
 				case StatusSending:
 					statusSymbol = "📤"
-					statusStyle = selectedStyle
+					statusStyle = normalStyle
 				case StatusSent:
 					statusSymbol = "●"
 					statusStyle = normalStyle
@@ -147,13 +144,8 @@ func (m *model) renderQueueContent(width, height int) string {
 				fileName = fileName[:maxNameLen-3] + "..."
 			}
 
-			line := fmt.Sprintf("%s%s %s", cursor, statusSymbol, fileName)
-
-			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
-				activeContent.WriteString(treeVert + selectedFileStyle.Render(line))
-			} else {
-				activeContent.WriteString(treeVert + statusStyle.Render(line))
-			}
+			content := fmt.Sprintf("%s %s", statusSymbol, fileName)
+			activeContent.WriteString(treeVert + renderSelectable(isCursor, 5, content, selectedFileStyle, statusStyle))
 
 			if itemIndex < totalJobs-1 {
 				activeContent.WriteString("\n")
@@ -181,10 +173,7 @@ func (m *model) renderQueueContent(width, height int) string {
 				continue
 			}
 
-			cursor := "     "
-			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
-				cursor = "   ▶ "
-			}
+			isCursor := itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive
 
 			var statusSymbol string
 			var statusStyle = normalStyle
@@ -206,13 +195,8 @@ func (m *model) renderQueueContent(width, height int) string {
 				fileName = fileName[:maxNameLen-3] + "..."
 			}
 
-			line := fmt.Sprintf("%s%s %s", cursor, statusSymbol, fileName)
-
-			if itemIndex == m.activeCursor && m.activePane == PaneQueue && m.queueSection == SectionActive {
-				activeContent.WriteString(treeVert + selectedFileStyle.Render(line))
-			} else {
-				activeContent.WriteString(treeVert + statusStyle.Render(line))
-			}
+			content := fmt.Sprintf("%s %s", statusSymbol, fileName)
+			activeContent.WriteString(treeVert + renderSelectable(isCursor, 5, content, selectedFileStyle, statusStyle))
 
 			if itemIndex < totalJobs-1 {
 				activeContent.WriteString("\n")
@@ -240,10 +224,7 @@ func (m *model) renderQueueContent(width, height int) string {
 		stagedContent.WriteString(dimStyle.Render("      · No staged files"))
 	} else {
 		for i, file := range relativeStagedFiles {
-			cursor := "      "
-			if i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged {
-				cursor = "    ▶ "
-			}
+			isCursor := i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged
 
 			fileName := m.formatStagedFileName(file)
 			maxNameLen := width - 10
@@ -251,13 +232,8 @@ func (m *model) renderQueueContent(width, height int) string {
 				fileName = fileName[:maxNameLen-3] + "..."
 			}
 
-			line := fmt.Sprintf("%s◉ %s", cursor, fileName)
-
-			if i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged {
-				stagedContent.WriteString(selectedFileStyle.Render(line))
-			} else {
-				stagedContent.WriteString(printableStyle.Render(line))
-			}
+			content := fmt.Sprintf("◉ %s", fileName)
+			stagedContent.WriteString(renderSelectable(isCursor, 6, content, selectedFileStyle, printableStyle))
 
 			if i < len(relativeStagedFiles)-1 {
 				stagedContent.WriteString("\n")
