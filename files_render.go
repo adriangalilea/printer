@@ -48,7 +48,7 @@ func (m *model) renderFilesContent(width, height int) string {
 			// Format file name
 			displayName := file.Name
 			maxNameLen := width - 10
-			if len(displayName) > maxNameLen && maxNameLen > 0 {
+			if maxNameLen > 0 && len(displayName) > maxNameLen {
 				displayName = displayName[:maxNameLen-3] + "..."
 			}
 			
@@ -91,30 +91,25 @@ func (m *model) renderFilesContent(width, height int) string {
 			}
 			
 			line := fmt.Sprintf("%s%s%s%s", cursor, selectionSymbol, typeIndicator, displayName)
-			
+
 			// Apply styles based on state combinations
 			var styledLine string
 			isCursor := i == m.fileCursor && m.activePane == PaneFiles && m.fileFocus == FocusFileList
 			isMarked := m.markedFiles[file.Path]
 			isMatched := m.matchedFiles[file.Path]
-			
+
 			if isCursor {
 				// Cursor position - highest priority
 				if isMarked {
-					// Cursor + marked
 					styledLine = selectedFileStyle.Copy().Background(theme.Yellow).Render(line)
 				} else if isMatched {
-					// Cursor + matched
 					styledLine = selectedFileStyle.Copy().Background(theme.Surface1).Render(line)
 				} else {
-					// Just cursor
 					styledLine = selectedFileStyle.Render(line)
 				}
 			} else if isMarked {
-				// Marked file
 				styledLine = markedStyle.Render(line)
 			} else if isMatched {
-				// Matched by pattern
 				styledLine = matchedStyle.Render(line)
 			} else if file.IsDir {
 				styledLine = dirStyle.Render(line)

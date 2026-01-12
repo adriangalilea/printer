@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.2.2"
+const version = "0.2.3"
 
 // Printable file extensions (single source of truth)
 var printableExts = []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".html", ".htm", ".rtf"}
@@ -56,8 +56,7 @@ var (
 
 	selectedFileStyle = lipgloss.NewStyle().
 				Foreground(theme.Base).
-				Background(theme.Green).
-				Bold(true)
+				Background(theme.Green)
 
 	markedStyle = lipgloss.NewStyle().
 			Foreground(theme.Yellow).

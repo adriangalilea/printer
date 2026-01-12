@@ -118,12 +118,10 @@ func (s *ScrollableArea) Render() string {
 		if i < visibleLines {
 			line := s.content[start+i]
 			
-			// Truncate or pad line to fit width
-			if len(line) > contentWidth {
-				line = line[:contentWidth-3] + "..."
-			} else {
-				// Pad to full width
-				line = line + strings.Repeat(" ", contentWidth-lipgloss.Width(line))
+			// Pad line to full width (no truncation - already handled upstream)
+			visualWidth := lipgloss.Width(line)
+			if visualWidth < contentWidth {
+				line = line + strings.Repeat(" ", contentWidth-visualWidth)
 			}
 			
 			// Add scrollbar if needed
