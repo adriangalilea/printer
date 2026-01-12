@@ -12,6 +12,15 @@ func (m *model) renderQueueContent(width, height int) string {
 
 	var result strings.Builder
 
+	// Printer info header
+	printer := getDefaultPrinter()
+	printerLine := fmt.Sprintf("🖨  %s", printer.Name)
+	if printer.Status != "" {
+		printerLine += fmt.Sprintf(" (%s)", printer.Status)
+	}
+	result.WriteString(dimStyle.Render(printerLine))
+	result.WriteString("\n")
+
 	// Active print jobs header (not scrollable)
 	// Count deduplicated jobs
 	totalJobs := len(m.jobs)
@@ -40,7 +49,8 @@ func (m *model) renderQueueContent(width, height int) string {
 	result.WriteString("\n")
 
 	// Calculate available height
-	fixedOverhead := 4
+	// Overhead: printer line (1) + PRINTING header (1) + separator+spacing (2) + STAGED header (1) = 5
+	fixedOverhead := 5
 	availableHeight := height - fixedOverhead
 
 	if availableHeight <= 0 {

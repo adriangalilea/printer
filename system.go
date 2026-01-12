@@ -22,6 +22,43 @@ type jobsRefreshedMsg struct {
 	jobs []PrintJob
 }
 
+// PrinterInfo holds the default printer name and status
+type PrinterInfo struct {
+	Name   string
+	Status string // "idle", "printing", etc.
+}
+
+// getDefaultPrinter returns info about the default printer
+func getDefaultPrinter() PrinterInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "lpstat", "-p", "-d")
+	output, err := cmd.Output()
+	if err != nil {
+		return PrinterInfo{Name: "Unknown", Status: ""}
+	}
+
+	info := PrinterInfo{}
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "printer ") {
+			// "printer EPSON_ET_2810_Series is idle.  enabled since..."
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				info.Name = parts[1]
+				info.Status = parts[3]
+				// Remove trailing period
+				info.Status = strings.TrimSuffix(info.Status, ".")
+			}
+		}
+	}
+	if info.Name == "" {
+		info.Name = "No printer"
+	}
+	return info
+}
+
 // tickCmd returns a command that sends a tickMsg every second
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {

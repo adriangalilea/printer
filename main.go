@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 // Printable file extensions (single source of truth)
 var printableExts = []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif", ".html", ".htm", ".rtf"}
