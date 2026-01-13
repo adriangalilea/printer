@@ -61,7 +61,7 @@ func parseJobIDFromLpOutput(output string) string {
 }
 
 // submitPrintJobCmd creates a command that sends a file to the printer
-func submitPrintJobCmd(opID string, filePath string) tea.Cmd {
+func submitPrintJobCmd(opID string, filePath string, copies int) tea.Cmd {
 	return func() tea.Msg {
 		// Add a small random delay to stagger concurrent submissions
 		// This helps prevent overwhelming the print spooler
@@ -78,12 +78,15 @@ func submitPrintJobCmd(opID string, filePath string) tea.Cmd {
 		}
 
 		// Execute lp command with -t to set job title (filename)
-		// This makes the filename visible in lpq output
+		// Use -n for number of copies
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		fileName := filepath.Base(filePath)
-		cmd := exec.CommandContext(ctx, "lp", "-t", fileName, filePath)
+		if copies < 1 {
+			copies = 1
+		}
+		cmd := exec.CommandContext(ctx, "lp", "-n", fmt.Sprintf("%d", copies), "-t", fileName, filePath)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -223,8 +226,8 @@ func sequentialPrintCmd(operations []PrintOperation) tea.Cmd {
 				Status: StatusSending,
 			}
 		},
-		// Then submit the print job
-		submitPrintJobCmd(first.ID, first.FilePath),
+		// Then submit the print job (default 1 copy for sequential operations)
+		submitPrintJobCmd(first.ID, first.FilePath, 1),
 		// Then wait a bit
 		tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 			return nil // Just for delay

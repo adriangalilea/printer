@@ -227,13 +227,25 @@ func (m *model) renderQueueContent(width, height int) string {
 			isCursor := i == m.stagedCursor && m.activePane == PaneQueue && m.queueSection == SectionStaged
 
 			fileName := m.formatStagedFileName(file)
-			maxNameLen := width - 10
+			maxNameLen := width - 14 // Extra space for copy indicator
 			if maxNameLen > 0 && len(fileName) > maxNameLen {
 				fileName = fileName[:maxNameLen-3] + "..."
 			}
 
-			content := fmt.Sprintf("◉ %s", fileName)
-			stagedContent.WriteString(renderSelectable(isCursor, 6, content, selectedFileStyle, printableStyle))
+			// Show ? for pending remove, ×N for multiple copies, ◉ for single
+			var indicator string
+			var style = printableStyle
+			if file.PendingRemove {
+				indicator = "?"
+				style = errorStyle
+			} else if file.Copies > 1 {
+				indicator = fmt.Sprintf("×%d", file.Copies)
+			} else {
+				indicator = "◉"
+			}
+
+			content := fmt.Sprintf("%s %s", indicator, fileName)
+			stagedContent.WriteString(renderSelectable(isCursor, 6, content, selectedFileStyle, style))
 
 			if i < len(relativeStagedFiles)-1 {
 				stagedContent.WriteString("\n")

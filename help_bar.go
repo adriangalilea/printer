@@ -33,11 +33,18 @@ var (
 		{Key: "q", Action: "quit", Global: true},
 	}
 
-	queueShortcuts = []HelpItem{
+	queueActiveShortcuts = []HelpItem{
 		{Key: "↑↓", Action: "navigate"},
 		{Key: "x", Action: "cancel job"},
 		{Key: "o", Action: "open file"},
 		{Key: "tab", Action: "switch section"},
+	}
+
+	queueStagedShortcuts = []HelpItem{
+		{Key: "↑↓", Action: "navigate"},
+		{Key: "←→", Action: "copies"},
+		{Key: "x", Action: "remove"},
+		{Key: "o", Action: "open file"},
 	}
 
 	filesInputShortcuts = []HelpItem{
@@ -153,7 +160,11 @@ func (h *HelpBar) buildItems() {
 
 	switch h.context.ActivePane {
 	case PaneQueue:
-		h.items = append(h.items, queueShortcuts...)
+		if h.context.QueueSection == SectionStaged {
+			h.items = append(h.items, queueStagedShortcuts...)
+		} else {
+			h.items = append(h.items, queueActiveShortcuts...)
+		}
 	case PaneFiles:
 		if h.context.FileFocus == FocusInput {
 			h.items = append(h.items, filesInputShortcuts...)
@@ -265,11 +276,21 @@ func (h *HelpBar) RenderFullHelp() string {
 		content.WriteString("\n")
 	}
 
-	// Queue pane shortcuts
+	// Queue pane shortcuts - Active section
 	content.WriteString("\n")
-	content.WriteString(helpSectionStyle.Render("Queue Pane"))
+	content.WriteString(helpSectionStyle.Render("Queue - Active Jobs"))
 	content.WriteString("\n")
-	for _, item := range queueShortcuts {
+	for _, item := range queueActiveShortcuts {
+		content.WriteString("  ")
+		content.WriteString(renderHelpItem(item))
+		content.WriteString("\n")
+	}
+
+	// Queue pane shortcuts - Staged section
+	content.WriteString("\n")
+	content.WriteString(helpSectionStyle.Render("Queue - Staged Files"))
+	content.WriteString("\n")
+	for _, item := range queueStagedShortcuts {
 		content.WriteString("  ")
 		content.WriteString(renderHelpItem(item))
 		content.WriteString("\n")

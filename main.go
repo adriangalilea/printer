@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const version = "0.2.6"
+const version = "0.3.0"
 
 // Printable file extensions (single source of truth)
 var printableExts = []string{".pdf", ".txt", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".gif"}
@@ -161,11 +161,13 @@ type PrintJob struct {
 }
 
 type StagedFile struct {
-	Name       string
-	Path       string
-	StagedFrom string // Directory this was staged from
-	Size       int64
-	AddedAt    time.Time
+	Name          string
+	Path          string
+	StagedFrom    string // Directory this was staged from
+	Size          int64
+	AddedAt       time.Time
+	Copies        int  // Number of copies to print (default 1)
+	PendingRemove bool // Shows "?" when true, next left removes
 }
 
 type model struct {
@@ -424,6 +426,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Create print operations and commands for each staged file
 				var printCmds []tea.Cmd
 				for _, file := range m.stagedFiles {
+					copies := file.Copies
+					if copies < 1 {
+						copies = 1
+					}
 					opID := fmt.Sprintf("%s-%d", file.Path, time.Now().UnixNano())
 					op := PrintOperation{
 						ID:        opID,
@@ -436,7 +442,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.printOps = append(m.printOps, op)
 
 					// Submit the print job - it runs async in its own goroutine
-					printCmds = append(printCmds, submitPrintJobCmd(opID, file.Path))
+					printCmds = append(printCmds, submitPrintJobCmd(opID, file.Path, copies))
 
 					delete(m.markedFiles, file.Path)
 				}
@@ -581,9 +587,11 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			if m.stagedCursor > 0 {
+				m.resetStagedPendingRemove(m.stagedCursor - 1)
 				m.stagedCursor--
 			} else {
 				// Move to active section
+				m.resetStagedPendingRemove(-1) // Reset all
 				m.queueSection = SectionActive
 				actualJobCount := m.getActualJobCount()
 				if actualJobCount > 0 {
@@ -614,9 +622,11 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			relativeStagedFiles := m.getRelativeStagedFiles()
 			if m.stagedCursor < len(relativeStagedFiles)-1 {
+				m.resetStagedPendingRemove(m.stagedCursor + 1)
 				m.stagedCursor++
 			} else if m.layoutMode != LayoutSingle {
 				// At bottom of staged, move to files pane
+				m.resetStagedPendingRemove(-1) // Reset all
 				m.activePane = PaneFiles
 				m.fileFocus = FocusInput
 				m.textInput.Focus()
@@ -823,6 +833,55 @@ func (m model) updateQueuePane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Refresh jobs asynchronously
 		return m, refreshJobsCmd()
 
+	case "left", "h":
+		if m.queueSection == SectionStaged {
+			relativeStagedFiles := m.getRelativeStagedFiles()
+			if m.stagedCursor < len(relativeStagedFiles) {
+				// Find the actual staged file
+				file := relativeStagedFiles[m.stagedCursor]
+				for i := range m.stagedFiles {
+					if m.stagedFiles[i].Path == file.Path {
+						if m.stagedFiles[i].PendingRemove {
+							// Second left press - remove the file
+							delete(m.markedFiles, file.Path)
+							m.stagedFiles = append(m.stagedFiles[:i], m.stagedFiles[i+1:]...)
+							newRelativeFiles := m.getRelativeStagedFiles()
+							if m.stagedCursor >= len(newRelativeFiles) && m.stagedCursor > 0 {
+								m.stagedCursor--
+							}
+						} else if m.stagedFiles[i].Copies > 1 {
+							// Decrease copies
+							m.stagedFiles[i].Copies--
+						} else {
+							// At 1 copy, set pending remove
+							m.stagedFiles[i].PendingRemove = true
+						}
+						break
+					}
+				}
+			}
+		}
+
+	case "right", "l":
+		if m.queueSection == SectionStaged {
+			relativeStagedFiles := m.getRelativeStagedFiles()
+			if m.stagedCursor < len(relativeStagedFiles) {
+				file := relativeStagedFiles[m.stagedCursor]
+				for i := range m.stagedFiles {
+					if m.stagedFiles[i].Path == file.Path {
+						if m.stagedFiles[i].PendingRemove {
+							// Cancel pending remove, back to 1
+							m.stagedFiles[i].PendingRemove = false
+						} else {
+							// Increase copies
+							m.stagedFiles[i].Copies++
+						}
+						break
+					}
+				}
+			}
+		}
+
 	case " ":
 		if m.queueSection == SectionActive && m.activeCursor < len(m.jobs) {
 			if m.selected[m.activeCursor] {
@@ -871,6 +930,7 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 									StagedFrom: m.currentDir,
 									Size:       f.Size,
 									AddedAt:    time.Now(),
+									Copies:     1,
 								})
 								break
 							}
@@ -975,6 +1035,7 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						StagedFrom: m.currentDir,
 						Size:       file.Size,
 						AddedAt:    time.Now(),
+						Copies:     1,
 					})
 				}
 			}
@@ -1119,6 +1180,7 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						StagedFrom: m.currentDir,
 						Size:       file.Size,
 						AddedAt:    time.Now(),
+						Copies:     1,
 					})
 				}
 			}
@@ -1166,6 +1228,7 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 								StagedFrom: m.currentDir,
 								Size:       f.Size,
 								AddedAt:    time.Now(),
+								Copies:     1,
 							})
 						}
 					}
@@ -1211,6 +1274,7 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 											StagedFrom: file.Path,
 											Size:       entry.Size(),
 											AddedAt:    time.Now(),
+											Copies:     1,
 										})
 									}
 								}
@@ -1237,6 +1301,7 @@ func (m model) updateFilesPane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						StagedFrom: m.currentDir,
 						Size:       file.Size,
 						AddedAt:    time.Now(),
+						Copies:     1,
 					})
 				}
 			}
@@ -1405,14 +1470,29 @@ func (m model) formatStagedFileName(file StagedFile) string {
 		// If we can't get relative path, show full path
 		return file.Path
 	}
-	
+
 	// If file is in current directory, just show the name
 	if !strings.Contains(relPath, string(filepath.Separator)) && !strings.HasPrefix(relPath, "..") {
 		return relPath
 	}
-	
+
 	// Otherwise show the relative path (could be ../, ../../, subdirs/, etc.)
 	return relPath
+}
+
+// resetStagedPendingRemove resets PendingRemove for all staged files except the one at cursorIdx
+func (m *model) resetStagedPendingRemove(exceptIdx int) {
+	relativeStagedFiles := m.getRelativeStagedFiles()
+	for i, relFile := range relativeStagedFiles {
+		if i != exceptIdx {
+			for j := range m.stagedFiles {
+				if m.stagedFiles[j].Path == relFile.Path && m.stagedFiles[j].PendingRemove {
+					m.stagedFiles[j].PendingRemove = false
+					m.stagedFiles[j].Copies = 1
+				}
+			}
+		}
+	}
 }
 
 func (m model) getDirectoryStatus(dirPath string) (totalPrintable int, stagedCount int, printingCount int) {
